@@ -1,0 +1,27 @@
+{
+	"name": "obsidian-drivesync",
+	"version": "1.0.0",
+	"description": "Two-way sync your Obsidian vault with Google Drive",
+	"main": "main.js",
+	"type": "module",
+	"scripts": {
+		"dev": "node esbuild.config.mjs",
+		"build": "tsc -noEmit -skipLibCheck && node esbuild.config.mjs production",
+		"version": "node version-bump.mjs && git add manifest.json versions.json",
+		"lint": "eslint ."
+	},
+	"keywords": [],
+	"license": "0-BSD",
+	"devDependencies": {
+		"@eslint/js": "^9.39.4",
+		"@types/node": "^25.9.3",
+		"esbuild": "^0.28.1",
+		"eslint": "^9.39.4",
+		"eslint-plugin-obsidianmd": "^0.3.0",
+		"globals": "^17.6.0",
+		"jiti": "^2.6.1",
+		"obsidian": "latest",
+		"typescript": "^5.9.3",
+		"typescript-eslint": "^8.61.0"
+	}
+}
