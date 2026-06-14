@@ -1,4 +1,4 @@
-import { Notice, Plugin } from 'obsidian';
+import { App, Modal, Notice, Platform, Plugin, Setting } from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
 	DrivesyncSettings,
@@ -10,6 +10,63 @@ import { findOrCreateFolder } from './drive/client';
 import { fullSync } from './drive/sync';
 import { startWatcher } from './watcher';
 import { DrivesyncStatusView, STATUS_VIEW_TYPE } from './ui/status-view';
+
+function promptForAuthCode(app: App): Promise<string> {
+	return new Promise<string>((resolve, reject) => {
+		const modal = new Modal(app);
+		modal.titleEl.setText('Google authentication');
+
+		const content = modal.contentEl.createDiv();
+		content.createEl('p', {
+			text: 'After authorizing in the browser, copy the full URL from the address bar and paste it below.',
+		});
+		content.createEl('p', {
+			text: 'The URL will contain ?code=...',
+			cls: 'drivesync-hint',
+		});
+
+		let inputEl: HTMLInputElement;
+		new Setting(content)
+			.setName('Redirect URL')
+			.addText((text) => {
+				inputEl = text.inputEl;
+				text.setPlaceholder(
+					'HTTP://127.0.0.1:8520?code=...',
+				);
+			});
+
+		const btnContainer = content.createDiv({
+			cls: 'drivesync-auth-buttons',
+		});
+
+		const submitBtn = btnContainer.createEl('button', {
+			text: 'Submit',
+			cls: 'mod-cta',
+		});
+		submitBtn.addEventListener('click', () => {
+			modal.close();
+			if (inputEl) {
+				resolve(inputEl.value);
+			} else {
+				reject(new Error('No input'));
+			}
+		});
+
+		const cancelBtn = btnContainer.createEl('button', {
+			text: 'Cancel',
+		});
+		cancelBtn.addEventListener('click', () => {
+			modal.close();
+			reject(new Error('Authentication cancelled'));
+		});
+
+		modal.onClose = () => {
+			reject(new Error('Authentication cancelled'));
+		};
+
+		modal.open();
+	});
+}
 
 export default class ObsidianDriveSync extends Plugin {
 	settings!: DrivesyncSettings;
@@ -112,6 +169,9 @@ export default class ObsidianDriveSync extends Plugin {
 				this.settings.clientId,
 				this.settings.clientSecret,
 				this.settings.redirectPort,
+				Platform.isMobile
+					? () => promptForAuthCode(this.app)
+					: undefined,
 			);
 			this.tokenData = tokenData;
 

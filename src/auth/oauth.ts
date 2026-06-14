@@ -1,6 +1,4 @@
-import http from 'http';
-import crypto from 'crypto';
-import { requestUrl } from 'obsidian';
+import { Platform, requestUrl } from 'obsidian';
 import {
 	GOOGLE_AUTH_URL,
 	GOOGLE_TOKEN_URL,
@@ -8,15 +6,29 @@ import {
 } from '../constants';
 import type { TokenData } from '../types';
 
-function generateCodeVerifier(): string {
-	return crypto.randomBytes(64).toString('base64url');
+function base64urlEncode(buffer: Uint8Array): string {
+	const bytes = Array.from(buffer);
+	let binary = '';
+	for (let i = 0; i < bytes.length; i++) {
+		binary += String.fromCharCode(bytes[i]!);
+	}
+	return btoa(binary)
+		.replace(/\+/g, '-')
+		.replace(/\//g, '_')
+		.replace(/=+$/, '');
 }
 
-function generateCodeChallenge(verifier: string): string {
-	return crypto
-		.createHash('sha256')
-		.update(verifier)
-		.digest('base64url');
+function generateCodeVerifier(): string {
+	const bytes = new Uint8Array(64);
+	crypto.getRandomValues(bytes);
+	return base64urlEncode(bytes);
+}
+
+async function generateCodeChallenge(verifier: string): Promise<string> {
+	const encoder = new TextEncoder();
+	const data = encoder.encode(verifier);
+	const hash = await crypto.subtle.digest('SHA-256', data);
+	return base64urlEncode(new Uint8Array(hash));
 }
 
 function buildAuthUrl(
@@ -37,43 +49,62 @@ function buildAuthUrl(
 	return `${GOOGLE_AUTH_URL}?${params.toString()}`;
 }
 
-function waitForAuthCode(port: number): Promise<string> {
+/**
+ * On Mobile we can't create an http server, but we keep this in order to have a simple flow for desktop users.
+ */
+function waitForAuthCodeDesktop(port: number): Promise<string> {
+	/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef */
+	const http = require('http');
 	return new Promise<string>((resolve, reject) => {
-		const server = http.createServer((req, res) => {
-			const reqUrl = new URL(
-				req.url ?? '/',
-				`http://127.0.0.1:${port}`,
-			);
-			const error = reqUrl.searchParams.get('error');
-			const code = reqUrl.searchParams.get('code');
 
-			if (error) {
-				res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
+		const server = http.createServer(
+			(
+				req: { url?: string },
+				res: { writeHead: (c: number, h: Record<string, string>) => void; end: (b: string) => void },
+			) => {
+				const reqUrl = new URL(
+					req.url ?? '/',
+					`http://127.0.0.1:${port}`,
+				);
+				const error = reqUrl.searchParams.get('error');
+				const code = reqUrl.searchParams.get('code');
+
+				if (error) {
+					res.writeHead(400, {
+						'Content-Type': 'text/html; charset=utf-8',
+					});
+					res.end(
+						'<html><body><h1>Authentication failed</h1><p>Please close this window and try again.</p></body></html>',
+					);
+					server.close();
+					reject(new Error(`OAuth error: ${error}`));
+					return;
+				}
+
+				if (code) {
+					res.writeHead(200, {
+						'Content-Type': 'text/html; charset=utf-8',
+					});
+					res.end(
+						'<html><body><h1>Authentication successful</h1><p>You can close this window and return to Obsidian.</p></body></html>',
+					);
+					server.close();
+					resolve(code);
+					return;
+				}
+
+				res.writeHead(400, {
+					'Content-Type': 'text/html; charset=utf-8',
+				});
 				res.end(
-					'<html><body><h1>Authentication failed</h1><p>Please close this window and try again.</p></body></html>',
+					'<html><body><h1>Invalid request</h1></body></html>',
 				);
 				server.close();
-				reject(new Error(`OAuth error: ${error}`));
-				return;
-			}
+				reject(new Error('No authorization code received'));
+			},
+		);
 
-			if (code) {
-				res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
-				res.end(
-					'<html><body><h1>Authentication successful</h1><p>You can close this window and return to Obsidian.</p></body></html>',
-				);
-				server.close();
-				resolve(code);
-				return;
-			}
-
-			res.writeHead(400, { 'Content-Type': 'text/html; charset=utf-8' });
-			res.end('<html><body><h1>Invalid request</h1></body></html>');
-			server.close();
-			reject(new Error('No authorization code received'));
-		});
-
-		server.on('error', (err: NodeJS.ErrnoException) => {
+		server.on('error', (err: { message: string }) => {
 			reject(
 				new Error(
 					`Server error: ${err.message}. Port ${port} may be in use.`,
@@ -90,21 +121,40 @@ function waitForAuthCode(port: number): Promise<string> {
 			reject(new Error('Authentication timed out (5 minutes)'));
 		}, 5 * 60 * 1000);
 	});
+	/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 }
+
+export type CodeProvider = () => Promise<string>;
 
 export async function startAuthFlow(
 	clientId: string,
 	clientSecret: string,
 	port: number,
+	codeProvider?: CodeProvider,
 ): Promise<TokenData> {
 	const codeVerifier = generateCodeVerifier();
-	const codeChallenge = generateCodeChallenge(codeVerifier);
+	const codeChallenge = await generateCodeChallenge(codeVerifier);
 	const redirectUri = `http://127.0.0.1:${port}`;
 	const authUrl = buildAuthUrl(clientId, redirectUri, codeChallenge);
 
 	window.open(authUrl, '_blank');
 
-	const code = await waitForAuthCode(port);
+	let code: string;
+	if (Platform.isMobile) {
+		if (!codeProvider) {
+			throw new Error('Code provider required on mobile');
+		}
+		code = await codeProvider();
+		try {
+			const parsed = new URL(code);
+			const codeParam = parsed.searchParams.get('code');
+			if (codeParam) code = codeParam;
+		} catch {
+			// Not a URL, assume it's the raw code
+		}
+	} else {
+		code = await waitForAuthCodeDesktop(port);
+	}
 
 	const params: Record<string, string> = {
 		client_id: clientId,
@@ -130,7 +180,11 @@ export async function startAuthFlow(
 
 	if (response.status !== 200) {
 		const errBody = response.text;
-		console.error('DriveSync token exchange failed:', response.status, errBody);
+		console.error(
+			'DriveSync token exchange failed:',
+			response.status,
+			errBody,
+		);
 		throw new Error(
 			`Token exchange failed (${response.status}): ${errBody}`,
 		);

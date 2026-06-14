@@ -5,5 +5,5 @@
 	"minAppVersion": "1.13.0",
 	"description": "Two-way sync your vault with Google Drive.",
 	"author": "lcjury",
-	"isDesktopOnly": true
+	"isDesktopOnly": false
 }
