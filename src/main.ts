@@ -10,6 +10,8 @@ import { findOrCreateFolder } from './drive/client';
 import { fullSync } from './drive/sync';
 import { startWatcher } from './watcher';
 import { DrivesyncStatusView, STATUS_VIEW_TYPE } from './ui/status-view';
+import { initLogger, flushAndClose, log } from './utils/logger';
+import { STARTUP_WATCHER_QUIET_MS } from './constants';
 
 function promptForAuthCode(app: App): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
@@ -75,34 +77,37 @@ export default class ObsidianDriveSync extends Plugin {
 	syncing = false;
 
 	private watcherCleanup: (() => void) | null = null;
+	private statusBarItem: HTMLElement | null = null;
+	private autoSyncStartTimer: number | null = null;
 
 	async onload(): Promise<void> {
 		await this.loadAllData();
+		initLogger(this.app.vault, this.app.vault.configDir);
 
 		this.addRibbonIcon('refresh-cw', 'Drivesync: Sync now', () => {
 			void this.runFullSync();
 		});
 
 		this.addCommand({
-			id: 'drivesync-sync-now',
+			id: 'sync-now',
 			name: 'Sync now',
 			callback: () => this.runFullSync(),
 		});
 
 		this.addCommand({
-			id: 'drivesync-connect',
+			id: 'connect',
 			name: 'Connect Google Drive',
 			callback: () => this.connectDrive(),
 		});
 
 		this.addCommand({
-			id: 'drivesync-disconnect',
+			id: 'disconnect',
 			name: 'Disconnect Google Drive',
 			callback: () => this.disconnectDrive(),
 		});
 
 		this.addCommand({
-			id: 'drivesync-show-status',
+			id: 'show-status',
 			name: 'Show sync status',
 			callback: () => {
 				void this.showStatus();
@@ -116,13 +121,30 @@ export default class ObsidianDriveSync extends Plugin {
 			(leaf) => new DrivesyncStatusView(leaf, this),
 		);
 
-		const statusBarItem = this.addStatusBarItem();
-		statusBarItem.setText('Drivesync: Ready');
-		statusBarItem.addClass('drivesync-status-bar');
+		this.statusBarItem = this.addStatusBarItem();
+		this.statusBarItem.addClass('drivesync-status-bar');
+		this.statusBarItem.setAttribute('aria-label', '');
+		this.updateStatusBar();
+
+		this.app.workspace.onLayoutReady(() => {
+			if (!this.settings.autoSync || !this.tokenData || !this.syncState) {
+				return;
+			}
+
+			this.autoSyncStartTimer = window.setTimeout(() => {
+				this.autoSyncStartTimer = null;
+				this.startAutoSync();
+			}, STARTUP_WATCHER_QUIET_MS);
+		});
 	}
 
 	onunload(): void {
+		if (this.autoSyncStartTimer) {
+			window.clearTimeout(this.autoSyncStartTimer);
+			this.autoSyncStartTimer = null;
+		}
 		this.stopAutoSync();
+		void flushAndClose();
 	}
 
 	async loadAllData(): Promise<void> {
@@ -134,16 +156,7 @@ export default class ObsidianDriveSync extends Plugin {
 		);
 		this.tokenData = (data?.tokenData as TokenData | null) ?? null;
 		this.syncState = (data?.syncState as SyncState | null) ?? null;
-
-		// Startup sync if connected
-		if (this.tokenData && this.syncState) {
-			window.setTimeout(() => {
-			void this.runFullSync();
-		}, 2000);
-			if (this.settings.autoSync) {
-				this.startAutoSync();
-			}
-		}
+		this.updateStatusBar();
 	}
 
 	async saveAllData(): Promise<void> {
@@ -152,6 +165,17 @@ export default class ObsidianDriveSync extends Plugin {
 			tokenData: this.tokenData,
 			syncState: this.syncState,
 		});
+	}
+
+	updateStatusBar(): void {
+		if (!this.statusBarItem) return;
+		if (this.syncing) {
+			this.statusBarItem.setText('Drivesync: Syncing...');
+		} else if (this.tokenData) {
+			this.statusBarItem.setText('Drivesync: Connected');
+		} else {
+			this.statusBarItem.setText('Drivesync: Not connected');
+		}
 	}
 
 	async connectDrive(): Promise<void> {
@@ -188,6 +212,8 @@ export default class ObsidianDriveSync extends Plugin {
 			};
 
 			await this.saveAllData();
+			this.updateStatusBar();
+			log('DriveSync: connected to Google Drive');
 			new Notice('Drivesync: Connected. Running initial sync...');
 
 			await this.runFullSync();
@@ -207,6 +233,8 @@ export default class ObsidianDriveSync extends Plugin {
 		this.syncState = null;
 		this.stopAutoSync();
 		await this.saveAllData();
+		this.updateStatusBar();
+		log('DriveSync: disconnected from Google Drive');
 		new Notice('Drivesync: Disconnected from Google Drive.');
 	}
 
@@ -217,18 +245,20 @@ export default class ObsidianDriveSync extends Plugin {
 		}
 
 		this.syncing = true;
+		this.updateStatusBar();
 		try {
 			await fullSync(this);
 		} finally {
 			this.syncing = false;
+			this.updateStatusBar();
 		}
 	}
 
-	startAutoSync(): void {
+	startAutoSync(quietMs = 0): void {
 		if (!this.settings.autoSync) return;
 		if (!this.tokenData) return;
 		this.stopAutoSync();
-		this.watcherCleanup = startWatcher(this);
+		this.watcherCleanup = startWatcher(this, { quietMs });
 	}
 
 	stopAutoSync(): void {

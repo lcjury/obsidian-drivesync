@@ -148,6 +148,7 @@ export async function listAllFilesRecursive(
 		for (const files of results) {
 			for (const file of files) {
 				if (file.mimeType === 'application/vnd.google-apps.folder') {
+					allFiles.push(file);
 					folderQueue.push(file.id);
 				} else {
 					allFiles.push(file);
@@ -163,12 +164,8 @@ function resolveFilePath(
 	file: DriveFile,
 	allFiles: DriveFile[],
 ): string {
-	if (file.appProperties?.path) {
-		return file.appProperties.path;
-	}
-
 	const parent = file.parents?.[0];
-	if (!parent) return file.name;
+	if (!parent) return file.appProperties?.path ?? file.name;
 
 	const folders = allFiles.filter(
 		(f) => f.mimeType === 'application/vnd.google-apps.folder',
@@ -191,7 +188,9 @@ function resolveFilePath(
 	}
 
 	pathParts.push(file.name);
-	return pathParts.join('/');
+	return pathParts.length > 1 || !file.appProperties?.path
+		? pathParts.join('/')
+		: file.appProperties.path;
 }
 
 export function driveFileToLocalPath(
@@ -284,6 +283,57 @@ export async function updateFilePath(
 	});
 }
 
+export async function renameFile(
+	accessToken: string,
+	fileId: string,
+	oldPath: string,
+	newPath: string,
+	rootFolderId: string,
+): Promise<DriveFile> {
+	const oldDir = oldPath.includes('/')
+		? oldPath.substring(0, oldPath.lastIndexOf('/'))
+		: '';
+	const newDir = newPath.includes('/')
+		? newPath.substring(0, newPath.lastIndexOf('/'))
+		: '';
+	const newName = newPath.split('/').pop() ?? newPath;
+
+	const dirChanged = oldDir !== newDir;
+
+	const newParentId = dirChanged
+		? await findOrCreateFolderPath(accessToken, rootFolderId, newDir)
+		: null;
+
+	let url = `${DRIVE_FILES_URL}/${fileId}`;
+	const params = new URLSearchParams();
+	if (dirChanged) {
+		params.set('addParents', newParentId!);
+		const file = await getFileMetadata(accessToken, fileId);
+		const oldParent = file.parents?.[0];
+		if (oldParent) {
+			params.set('removeParents', oldParent);
+		}
+	}
+	if (params.toString()) {
+		url += `?${params.toString()}`;
+	}
+
+	const response = await requestUrl({
+		url,
+		method: 'PATCH',
+		headers: {
+			...authHeaders(accessToken),
+			'Content-Type': 'application/json',
+		},
+		body: JSON.stringify({
+			name: newName,
+			appProperties: { path: newPath },
+		}),
+	});
+
+	return response.json as DriveFile;
+}
+
 export async function downloadFile(
 	accessToken: string,
 	fileId: string,
@@ -320,4 +370,3 @@ export async function getFileMetadata(
 	});
 	return response.json as DriveFile;
 }
-

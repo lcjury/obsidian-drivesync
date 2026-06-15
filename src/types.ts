@@ -22,5 +22,6 @@ export interface SyncResult {
 	uploaded: number;
 	downloaded: number;
 	conflicted: number;
+	deleted: number;
 	errors: string[];
 }

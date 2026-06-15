@@ -3,7 +3,3 @@
 	display: flex;
 	gap: 8px;
 }
-
-.drivesync-status-bar {
-	cursor: pointer;
-}

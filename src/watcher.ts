@@ -1,11 +1,32 @@
 import { TFile, type TAbstractFile } from 'obsidian';
 import type ObsidianDriveSync from './main';
-import { syncSingleLocalChange } from './drive/sync';
+import { syncSingleLocalChange, syncSingleLocalDelete, syncSingleLocalRename } from './drive/sync';
+import { log } from './utils/logger';
 
-export function startWatcher(plugin: ObsidianDriveSync): () => void {
+interface WatcherOptions {
+	quietMs?: number;
+}
+
+export function startWatcher(
+	plugin: ObsidianDriveSync,
+	options: WatcherOptions = {},
+): () => void {
 	let debounceTimer: number | null = null;
 	const pendingPaths = new Set<string>();
 	let isSyncing = false;
+	const ignoreUntil = Date.now() + (options.quietMs ?? 0);
+
+	function getSyncableFile(file: TAbstractFile): TFile | null {
+		if (Date.now() < ignoreUntil) return null;
+		if (plugin.syncing) return null;
+		if (!(file instanceof TFile)) return null;
+		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return null;
+
+		const tracked = plugin.syncState?.files[file.path];
+		if (tracked && file.stat.mtime === tracked.localMtime) return null;
+
+		return file;
+	}
 
 	function flushChanges() {
 		if (isSyncing || pendingPaths.size === 0) return;
@@ -38,11 +59,12 @@ export function startWatcher(plugin: ObsidianDriveSync): () => void {
 			});
 	}
 
-	function onChange(file: TAbstractFile) {
-		if (plugin.syncing) return;
-		if (!(file instanceof TFile)) return;
+	function queueChange(file: TAbstractFile, action: string) {
+		const syncableFile = getSyncableFile(file);
+		if (!syncableFile) return;
 
-		pendingPaths.add(file.path);
+		log(`DriveSync watcher: ${action} ${syncableFile.path}`);
+		pendingPaths.add(syncableFile.path);
 
 		if (debounceTimer) {
 			window.clearTimeout(debounceTimer);
@@ -53,27 +75,41 @@ export function startWatcher(plugin: ObsidianDriveSync): () => void {
 		);
 	}
 
-	const createRef = plugin.app.vault.on('create', onChange);
-	const modifyRef = plugin.app.vault.on('modify', onChange);
-	const renameRef = plugin.app.vault.on('rename', (file) => {
-		if (file instanceof TFile) {
-			pendingPaths.add(file.path);
-			if (debounceTimer) window.clearTimeout(debounceTimer);
-			debounceTimer = window.setTimeout(
-				flushChanges,
-				plugin.settings.debounceMs,
-			);
-		}
+	const createRef = plugin.app.vault.on('create', (file) => {
+		queueChange(file, 'created');
+	});
+	const modifyRef = plugin.app.vault.on('modify', (file) => {
+		queueChange(file, 'modified');
+	});
+	const deleteRef = plugin.app.vault.on('delete', (file) => {
+		if (Date.now() < ignoreUntil) return;
+		if (plugin.syncing) return;
+		if (!(file instanceof TFile)) return;
+		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return;
+		log(`DriveSync watcher: deleted ${file.path}`);
+		void syncSingleLocalDelete(plugin, file.path);
+	});
+	const renameRef = plugin.app.vault.on('rename', (file, oldPath) => {
+		if (Date.now() < ignoreUntil) return;
+		if (plugin.syncing) return;
+		if (!(file instanceof TFile)) return;
+		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return;
+		log(
+			`DriveSync watcher: renamed ${oldPath} → ${file.path}`,
+		);
+		void syncSingleLocalRename(plugin, oldPath, file.path);
 	});
 
 	plugin.registerEvent(createRef);
 	plugin.registerEvent(modifyRef);
+	plugin.registerEvent(deleteRef);
 	plugin.registerEvent(renameRef);
 
 	return () => {
 		if (debounceTimer) window.clearTimeout(debounceTimer);
 		plugin.app.vault.offref(createRef);
 		plugin.app.vault.offref(modifyRef);
+		plugin.app.vault.offref(deleteRef);
 		plugin.app.vault.offref(renameRef);
 	};
 }

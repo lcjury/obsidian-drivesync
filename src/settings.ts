@@ -149,7 +149,8 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 				.addButton((btn) =>
 					btn
 						.setButtonText('Disconnect')
-						.setDestructive()
+					// eslint-disable-next-line @typescript-eslint/no-deprecated
+						.setWarning()
 						.onClick(async () => {
 							this.plugin.tokenData = null;
 							this.plugin.syncState = null;
@@ -158,7 +159,8 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 							new Notice(
 								'Drivesync: Disconnected from Google Drive',
 							);
-							this.update();
+							// eslint-disable-next-line @typescript-eslint/no-deprecated
+						this.display();
 						}),
 				);
 		} else {
@@ -173,7 +175,8 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 						.setCta()
 						.onClick(async () => {
 							await this.plugin.connectDrive();
-							this.update();
+							// eslint-disable-next-line @typescript-eslint/no-deprecated
+						this.display();
 						}),
 				);
 		}

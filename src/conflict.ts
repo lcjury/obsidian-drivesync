@@ -43,6 +43,7 @@ export interface ConflictResult {
 	winnerContent: ArrayBuffer;
 	loserPath: string;
 	loserContent: ArrayBuffer;
+	conflictedPath?: string;
 }
 
 export async function resolveConflict(
@@ -56,22 +57,31 @@ export async function resolveConflict(
 	} = params;
 
 	if (localMtime >= remoteMtime || (localMtime === 0 && remoteMtime === 0)) {
-		createConflictedCopy(params.path, remoteContent, params.vault).catch(
-			console.error,
+		const conflictedPath = await createConflictedCopy(
+			params.path,
+			remoteContent,
+			params.vault,
 		);
 		return {
 			winnerPath: params.path,
 			winnerContent: localContent,
 			loserPath: params.path,
 			loserContent: remoteContent,
+			conflictedPath,
 		};
 	}
 
+	const conflictedPath = await createConflictedCopy(
+		params.path,
+		localContent,
+		params.vault,
+	);
 	return {
 		winnerPath: params.path,
 		winnerContent: remoteContent,
 		loserPath: params.path,
 		loserContent: localContent,
+		conflictedPath,
 	};
 }
 
