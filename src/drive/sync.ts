@@ -11,7 +11,6 @@ import {
 	trashFile,
 	renameFile,
 	driveFileToLocalPath,
-	updateFilePath,
 } from './client';
 import { getMimeType } from '../constants';
 import { getValidAccessToken } from '../auth/oauth';
@@ -244,11 +243,6 @@ export async function fullSync(
 							conflict.winnerContent,
 							getMimeType(conflict.winnerPath),
 						);
-						await updateFilePath(
-							accessToken,
-							updatedFile.id,
-							localPath,
-						);
 						track(localPath, updatedFile, winnerRaw);
 						result.conflicted++;
 						log(
@@ -262,11 +256,6 @@ export async function fullSync(
 							remoteFile.id,
 							content,
 							getMimeType(localPath),
-						);
-						await updateFilePath(
-							accessToken,
-							updatedFile.id,
-							localPath,
 						);
 						track(localPath, updatedFile, localFile);
 						result.uploaded++;
@@ -282,13 +271,6 @@ export async function fullSync(
 							log(`  downloaded ${remotePath}`);
 						}
 					} else {
-						if (localPath !== trackedPath) {
-							await updateFilePath(
-								accessToken,
-								remoteFile.id,
-								localPath,
-							);
-						}
 						track(localPath, remoteFile, localFile);
 					}
 				} else if (localExists && localFile && !remoteExists) {
@@ -375,7 +357,6 @@ export async function fullSync(
 						conflict.winnerContent,
 						getMimeType(path),
 					);
-					await updateFilePath(accessToken, updatedFile.id, path);
 					track(path, updatedFile, winnerRaw);
 					result.conflicted++;
 					log(`  conflicted ${path} → ${conflict.conflictedPath}`);

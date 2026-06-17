@@ -2,6 +2,7 @@ import { TFile, type TAbstractFile } from 'obsidian';
 import type ObsidianDriveSync from './main';
 import { syncSingleLocalChange, syncSingleLocalDelete, syncSingleLocalRename } from './drive/sync';
 import { log } from './utils/logger';
+import { ACTIVE_FILE_DEBOUNCE_MS } from './constants';
 
 interface WatcherOptions {
 	quietMs?: number;
@@ -15,6 +16,27 @@ export function startWatcher(
 	const pendingPaths = new Set<string>();
 	let isSyncing = false;
 	const ignoreUntil = Date.now() + (options.quietMs ?? 0);
+
+	function activeFileDebounceMs(): number {
+		return Math.max(plugin.settings.debounceMs, ACTIVE_FILE_DEBOUNCE_MS);
+	}
+
+	function getDelayForFile(file: TFile): number {
+		const activeFile = plugin.app.workspace.getActiveFile();
+		if (activeFile?.path !== file.path) {
+			return plugin.settings.debounceMs;
+		}
+
+		const idleMs = Date.now() - file.stat.mtime;
+		return Math.max(activeFileDebounceMs() - idleMs, 0);
+	}
+
+	function scheduleFlush(delayMs: number): void {
+		if (debounceTimer) {
+			window.clearTimeout(debounceTimer);
+		}
+		debounceTimer = window.setTimeout(flushChanges, delayMs);
+	}
 
 	function getSyncableFile(file: TAbstractFile): TFile | null {
 		if (Date.now() < ignoreUntil) return null;
@@ -35,26 +57,35 @@ export function startWatcher(
 		const paths = [...pendingPaths];
 		pendingPaths.clear();
 
-		Promise.resolve()
+		void Promise.resolve()
 			.then(async () => {
+				let nextDelay: number | null = null;
 				for (const path of paths) {
 					const file = plugin.app.vault.getAbstractFileByPath(
 						path,
 					) as TFile | null;
 					if (!file) continue;
+					const delayMs = getDelayForFile(file);
+					if (delayMs > 0) {
+						pendingPaths.add(path);
+						nextDelay =
+							nextDelay === null
+								? delayMs
+								: Math.min(nextDelay, delayMs);
+						continue;
+					}
 					await syncSingleLocalChange(plugin, file);
 				}
+				return nextDelay;
 			})
 			.catch((err: unknown) => {
 				console.error('DriveSync watcher error:', err);
+				return null;
 			})
-			.finally(() => {
+			.then((nextDelay) => {
 				isSyncing = false;
 				if (pendingPaths.size > 0) {
-					debounceTimer = window.setTimeout(
-						flushChanges,
-						plugin.settings.debounceMs,
-					);
+					scheduleFlush(nextDelay ?? plugin.settings.debounceMs);
 				}
 			});
 	}
@@ -63,16 +94,11 @@ export function startWatcher(
 		const syncableFile = getSyncableFile(file);
 		if (!syncableFile) return;
 
-		log(`DriveSync watcher: ${action} ${syncableFile.path}`);
-		pendingPaths.add(syncableFile.path);
-
-		if (debounceTimer) {
-			window.clearTimeout(debounceTimer);
+		if (!pendingPaths.has(syncableFile.path)) {
+			log(`DriveSync watcher: ${action} ${syncableFile.path}`);
 		}
-		debounceTimer = window.setTimeout(
-			flushChanges,
-			plugin.settings.debounceMs,
-		);
+		pendingPaths.add(syncableFile.path);
+		scheduleFlush(getDelayForFile(syncableFile));
 	}
 
 	const createRef = plugin.app.vault.on('create', (file) => {

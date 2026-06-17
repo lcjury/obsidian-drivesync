@@ -4,6 +4,9 @@ import {
 	DRIVE_UPLOAD_BASE,
 } from '../constants';
 
+type RequestUrlOptions = Exclude<Parameters<typeof requestUrl>[0], string>;
+type RequestUrlResponse = Awaited<ReturnType<typeof requestUrl>>;
+
 export interface DriveFile {
 	id: string;
 	name: string;
@@ -25,6 +28,70 @@ function authHeaders(accessToken: string): Record<string, string> {
 	return { Authorization: `Bearer ${accessToken}` };
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null;
+}
+
+function getString(
+	record: Record<string, unknown>,
+	key: string,
+): string | null {
+	const value = record[key];
+	return typeof value === 'string' ? value : null;
+}
+
+function describeDriveErrorBody(body: unknown): string | null {
+	if (!isRecord(body)) return null;
+
+	const error = body.error;
+	if (isRecord(error)) {
+		const message = getString(error, 'message');
+		const status = getString(error, 'status');
+		const errors = error.errors;
+		let reason: string | null = null;
+
+		if (Array.isArray(errors) && isRecord(errors[0])) {
+			reason = getString(errors[0], 'reason');
+		}
+
+		return [
+			status ? `status=${status}` : '',
+			reason ? `reason=${reason}` : '',
+			message ? `message=${message}` : '',
+		]
+			.filter(Boolean)
+			.join(', ');
+	}
+
+	if (typeof error === 'string') {
+		const description = getString(body, 'error_description');
+		return description ? `${error}: ${description}` : error;
+	}
+
+	return null;
+}
+
+async function requestDriveUrl(
+	options: RequestUrlOptions,
+): Promise<RequestUrlResponse> {
+	const response = await requestUrl({
+		...options,
+		throw: false,
+	});
+
+	if (response.status < 400) {
+		return response;
+	}
+
+	const detail =
+		describeDriveErrorBody(response.json as unknown) ||
+		response.text ||
+		'No response body';
+	throw new Error(
+		`Google Drive request failed (${response.status}) ${options.method ?? 'GET'} ${options.url}: ${detail}`,
+	);
+}
+
 export async function findOrCreateFolder(
 	accessToken: string,
 	folderName: string,
@@ -32,7 +99,7 @@ export async function findOrCreateFolder(
 	const query = encodeURIComponent(
 		`name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
 	);
-	const listResponse = await requestUrl({
+	const listResponse = await requestDriveUrl({
 		url: `${DRIVE_FILES_URL}?q=${query}&fields=files(id,name)&pageSize=10`,
 		headers: authHeaders(accessToken),
 	});
@@ -42,7 +109,7 @@ export async function findOrCreateFolder(
 		return data.files[0]!.id;
 	}
 
-	const createResponse = await requestUrl({
+	const createResponse = await requestDriveUrl({
 		url: DRIVE_FILES_URL,
 		method: 'POST',
 		headers: {
@@ -72,7 +139,7 @@ export async function findOrCreateFolderPath(
 		const query = encodeURIComponent(
 			`name = '${part}' and mimeType = 'application/vnd.google-apps.folder' and '${currentParentId}' in parents and trashed = false`,
 		);
-		const response = await requestUrl({
+		const response = await requestDriveUrl({
 			url: `${DRIVE_FILES_URL}?q=${query}&fields=files(id,name)&pageSize=1`,
 			headers: authHeaders(accessToken),
 		});
@@ -81,7 +148,7 @@ export async function findOrCreateFolderPath(
 		if (data.files && data.files.length > 0) {
 			currentParentId = data.files[0]!.id;
 		} else {
-			const createResponse = await requestUrl({
+			const createResponse = await requestDriveUrl({
 				url: DRIVE_FILES_URL,
 				method: 'POST',
 				headers: {
@@ -118,7 +185,7 @@ export async function listFilesInFolder(
 			url += `&pageToken=${pageToken}`;
 		}
 
-		const response = await requestUrl({
+		const response = await requestDriveUrl({
 			url,
 			headers: authHeaders(accessToken),
 		});
@@ -165,7 +232,7 @@ function resolveFilePath(
 	allFiles: DriveFile[],
 ): string {
 	const parent = file.parents?.[0];
-	if (!parent) return file.appProperties?.path ?? file.name;
+	if (!parent) return file.name;
 
 	const folders = allFiles.filter(
 		(f) => f.mimeType === 'application/vnd.google-apps.folder',
@@ -178,19 +245,12 @@ function resolveFilePath(
 	while (currentId) {
 		const folder = folderMap.get(currentId);
 		if (!folder) break;
-		const folderPath = folder.appProperties?.path;
-		if (folderPath) {
-			pathParts.unshift(folderPath);
-			break;
-		}
 		pathParts.unshift(folder.name);
 		currentId = folder.parents?.[0];
 	}
 
 	pathParts.push(file.name);
-	return pathParts.length > 1 || !file.appProperties?.path
-		? pathParts.join('/')
-		: file.appProperties.path;
+	return pathParts.join('/');
 }
 
 export function driveFileToLocalPath(
@@ -205,9 +265,8 @@ async function createFileMetadata(
 	name: string,
 	parentId: string,
 	mimeType: string,
-	appProperties: Record<string, string>,
 ): Promise<DriveFile> {
-	const response = await requestUrl({
+	const response = await requestDriveUrl({
 		url: DRIVE_FILES_URL,
 		method: 'POST',
 		headers: {
@@ -218,7 +277,6 @@ async function createFileMetadata(
 			name,
 			parents: [parentId],
 			mimeType,
-			appProperties,
 		}),
 	});
 	return response.json as DriveFile;
@@ -230,7 +288,7 @@ async function uploadMediaContent(
 	content: ArrayBuffer,
 	mimeType: string,
 ): Promise<DriveFile> {
-	const response = await requestUrl({
+	const response = await requestDriveUrl({
 		url: `${DRIVE_UPLOAD_BASE}/files/${fileId}?uploadType=media`,
 		method: 'PATCH',
 		headers: {
@@ -245,14 +303,17 @@ async function uploadMediaContent(
 export async function uploadFile(
 	accessToken: string,
 	parentId: string,
-	localPath: string,
+	_localPath: string,
 	name: string,
 	content: ArrayBuffer,
 	mimeType: string,
 ): Promise<DriveFile> {
-	const fileMeta = await createFileMetadata(accessToken, name, parentId, mimeType, {
-		path: localPath,
-	});
+	const fileMeta = await createFileMetadata(
+		accessToken,
+		name,
+		parentId,
+		mimeType,
+	);
 	return uploadMediaContent(accessToken, fileMeta.id, content, mimeType);
 }
 
@@ -263,24 +324,6 @@ export async function updateFileContent(
 	mimeType: string,
 ): Promise<DriveFile> {
 	return uploadMediaContent(accessToken, fileId, content, mimeType);
-}
-
-export async function updateFilePath(
-	accessToken: string,
-	fileId: string,
-	localPath: string,
-): Promise<void> {
-	await requestUrl({
-		url: `${DRIVE_FILES_URL}/${fileId}`,
-		method: 'PATCH',
-		headers: {
-			...authHeaders(accessToken),
-			'Content-Type': 'application/json',
-		},
-		body: JSON.stringify({
-			appProperties: { path: localPath },
-		}),
-	});
 }
 
 export async function renameFile(
@@ -318,7 +361,7 @@ export async function renameFile(
 		url += `?${params.toString()}`;
 	}
 
-	const response = await requestUrl({
+	const response = await requestDriveUrl({
 		url,
 		method: 'PATCH',
 		headers: {
@@ -327,7 +370,6 @@ export async function renameFile(
 		},
 		body: JSON.stringify({
 			name: newName,
-			appProperties: { path: newPath },
 		}),
 	});
 
@@ -338,7 +380,7 @@ export async function downloadFile(
 	accessToken: string,
 	fileId: string,
 ): Promise<ArrayBuffer> {
-	const response = await requestUrl({
+	const response = await requestDriveUrl({
 		url: `${DRIVE_FILES_URL}/${fileId}?alt=media`,
 		headers: authHeaders(accessToken),
 	});
@@ -349,7 +391,7 @@ export async function trashFile(
 	accessToken: string,
 	fileId: string,
 ): Promise<void> {
-	await requestUrl({
+	await requestDriveUrl({
 		url: `${DRIVE_FILES_URL}/${fileId}`,
 		method: 'PATCH',
 		headers: {
@@ -364,7 +406,7 @@ export async function getFileMetadata(
 	accessToken: string,
 	fileId: string,
 ): Promise<DriveFile> {
-	const response = await requestUrl({
+	const response = await requestDriveUrl({
 		url: `${DRIVE_FILES_URL}/${fileId}?fields=id,name,md5Checksum,modifiedTime,mimeType,size,trashed,parents,appProperties`,
 		headers: authHeaders(accessToken),
 	});
