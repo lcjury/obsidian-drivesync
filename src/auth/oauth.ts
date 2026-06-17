@@ -52,15 +52,24 @@ function buildAuthUrl(
 /**
  * On Mobile we can't create an http server, but we keep this in order to have a simple flow for desktop users.
  */
-function waitForAuthCodeDesktop(port: number): Promise<string> {
+function waitForAuthCodeDesktop(port: number, authUrl: string): Promise<string> {
 	/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef */
 	const http = require('http');
 	return new Promise<string>((resolve, reject) => {
+		let settled = false;
+		let serverListening = false;
+		let timeoutId: number | null = null;
 
 		const server = http.createServer(
 			(
 				req: { url?: string },
-				res: { writeHead: (c: number, h: Record<string, string>) => void; end: (b: string) => void },
+				res: {
+					writeHead: (
+						c: number,
+						h: Record<string, string>,
+					) => void;
+					end: (b: string) => void;
+				},
 			) => {
 				const reqUrl = new URL(
 					req.url ?? '/',
@@ -76,8 +85,7 @@ function waitForAuthCodeDesktop(port: number): Promise<string> {
 					res.end(
 						'<html><body><h1>Authentication failed</h1><p>Please close this window and try again.</p></body></html>',
 					);
-					server.close();
-					reject(new Error(`OAuth error: ${error}`));
+					fail(new Error(`OAuth error: ${error}`));
 					return;
 				}
 
@@ -88,8 +96,7 @@ function waitForAuthCodeDesktop(port: number): Promise<string> {
 					res.end(
 						'<html><body><h1>Authentication successful</h1><p>You can close this window and return to Obsidian.</p></body></html>',
 					);
-					server.close();
-					resolve(code);
+					succeed(code);
 					return;
 				}
 
@@ -99,13 +106,37 @@ function waitForAuthCodeDesktop(port: number): Promise<string> {
 				res.end(
 					'<html><body><h1>Invalid request</h1></body></html>',
 				);
-				server.close();
-				reject(new Error('No authorization code received'));
+				fail(new Error('No authorization code received'));
 			},
 		);
 
+		function cleanup(): void {
+			if (timeoutId !== null) {
+				window.clearTimeout(timeoutId);
+				timeoutId = null;
+			}
+			if (serverListening) {
+				server.close();
+				serverListening = false;
+			}
+		}
+
+		function succeed(code: string): void {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			resolve(code);
+		}
+
+		function fail(error: Error): void {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			reject(error);
+		}
+
 		server.on('error', (err: { message: string }) => {
-			reject(
+			fail(
 				new Error(
 					`Server error: ${err.message}. Port ${port} may be in use.`,
 				),
@@ -113,12 +144,14 @@ function waitForAuthCodeDesktop(port: number): Promise<string> {
 		});
 
 		server.listen(port, '127.0.0.1', () => {
-			// Server started, will handle callbacks
+			serverListening = true;
+			if (!settled) {
+				window.open(authUrl, '_blank');
+			}
 		});
 
-		window.setTimeout(() => {
-			server.close();
-			reject(new Error('Authentication timed out (5 minutes)'));
+		timeoutId = window.setTimeout(() => {
+			fail(new Error('Authentication timed out (5 minutes)'));
 		}, 5 * 60 * 1000);
 	});
 	/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
@@ -137,13 +170,12 @@ export async function startAuthFlow(
 	const redirectUri = `http://127.0.0.1:${port}`;
 	const authUrl = buildAuthUrl(clientId, redirectUri, codeChallenge);
 
-	window.open(authUrl, '_blank');
-
 	let code: string;
 	if (Platform.isMobile) {
 		if (!codeProvider) {
 			throw new Error('Code provider required on mobile');
 		}
+		window.open(authUrl, '_blank');
 		code = await codeProvider();
 		try {
 			const parsed = new URL(code);
@@ -153,7 +185,7 @@ export async function startAuthFlow(
 			// Not a URL, assume it's the raw code
 		}
 	} else {
-		code = await waitForAuthCodeDesktop(port);
+		code = await waitForAuthCodeDesktop(port, authUrl);
 	}
 
 	const params: Record<string, string> = {
