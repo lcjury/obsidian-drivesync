@@ -159,6 +159,36 @@ function waitForAuthCodeDesktop(port: number, authUrl: string): Promise<string> 
 
 export type CodeProvider = () => Promise<string>;
 
+function extractAuthorizationCode(value: string): string {
+	const input = value.trim();
+	if (!input) {
+		throw new Error('No authorization code provided');
+	}
+
+	let parsed: URL;
+	try {
+		parsed = new URL(input);
+	} catch {
+		return input;
+	}
+
+	const error = parsed.searchParams.get('error');
+	if (error) {
+		const description = parsed.searchParams.get('error_description');
+		throw new Error(
+			`OAuth error: ${description ? `${error} (${description})` : error}`,
+		);
+	}
+
+	const code = parsed.searchParams.get('code');
+	if (!code) {
+		throw new Error(
+			'The pasted redirect URL does not contain an authorization code',
+		);
+	}
+	return code;
+}
+
 export async function startAuthFlow(
 	clientId: string,
 	clientSecret: string,
@@ -176,14 +206,7 @@ export async function startAuthFlow(
 			throw new Error('Code provider required on mobile');
 		}
 		window.open(authUrl, '_blank');
-		code = await codeProvider();
-		try {
-			const parsed = new URL(code);
-			const codeParam = parsed.searchParams.get('code');
-			if (codeParam) code = codeParam;
-		} catch {
-			// Not a URL, assume it's the raw code
-		}
+		code = extractAuthorizationCode(await codeProvider());
 	} else {
 		code = await waitForAuthCodeDesktop(port, authUrl);
 	}

@@ -16,6 +16,7 @@ import { STARTUP_WATCHER_QUIET_MS } from './constants';
 function promptForAuthCode(app: App): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
 		const modal = new Modal(app);
+		let settled = false;
 		modal.titleEl.setText('Google authentication');
 
 		const content = modal.contentEl.createDiv();
@@ -46,23 +47,30 @@ function promptForAuthCode(app: App): Promise<string> {
 			cls: 'mod-cta',
 		});
 		submitBtn.addEventListener('click', () => {
-			modal.close();
-			if (inputEl) {
-				resolve(inputEl.value);
-			} else {
-				reject(new Error('No input'));
+			const value = inputEl?.value.trim();
+			if (!value) {
+				new Notice('Drivesync: Paste the redirect URL first.');
+				return;
 			}
+
+			settled = true;
+			resolve(value);
+			modal.close();
 		});
 
 		const cancelBtn = btnContainer.createEl('button', {
 			text: 'Cancel',
 		});
 		cancelBtn.addEventListener('click', () => {
-			modal.close();
+			if (settled) return;
+			settled = true;
 			reject(new Error('Authentication cancelled'));
+			modal.close();
 		});
 
 		modal.onClose = () => {
+			if (settled) return;
+			settled = true;
 			reject(new Error('Authentication cancelled'));
 		};
 
