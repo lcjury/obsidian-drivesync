@@ -49,6 +49,9 @@ export class DrivesyncStatusView extends ItemView {
 		});
 
 		if (syncState) {
+			contentEl.createEl('p', {
+				text: `Drive folder: ${syncState.rootFolderName}`,
+			});
 			const lastSync = syncState.lastSyncTime
 				? new Date(syncState.lastSyncTime).toLocaleString()
 				: 'Never';

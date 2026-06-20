@@ -300,6 +300,12 @@ export class SyncCoordinator {
 				);
 				return result;
 			}
+			if (!this.plugin.isDriveFolderSelectionCurrent()) {
+				result.errors.push(
+					'Drive folder selection changed. Reconnect Google Drive first.',
+				);
+				return result;
+			}
 
 			this.services.clearRemoteCache();
 			const seeds = await buildFullSyncSeeds(

@@ -10,6 +10,7 @@ export interface TrackedFile {
 export interface SyncState {
 	files: Record<string, TrackedFile>;
 	rootFolderId: string;
+	rootFolderName: string;
 	lastSyncTime: number;
 }
 
@@ -17,6 +18,7 @@ export interface TokenData {
 	accessToken: string;
 	refreshToken: string;
 	expiresAt: number;
+	scope: string;
 }
 
 export interface SyncResult {

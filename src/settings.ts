@@ -1,11 +1,16 @@
-import { App, PluginSettingTab, Setting, Notice } from 'obsidian';
+import { App, PluginSettingTab, Setting } from 'obsidian';
 import type ObsidianDriveSync from './main';
-import { DEFAULT_REDIRECT_PORT, DEFAULT_DEBOUNCE_MS } from './constants';
+import {
+	DEFAULT_REDIRECT_PORT,
+	DEFAULT_DEBOUNCE_MS,
+	DEFAULT_DRIVE_FOLDER_NAME,
+} from './constants';
 
 export interface DrivesyncSettings {
 	clientId: string;
 	clientSecret: string;
 	redirectPort: number;
+	driveFolderName: string;
 	debounceMs: number;
 	autoSync: boolean;
 }
@@ -14,6 +19,7 @@ export const DEFAULT_SETTINGS: DrivesyncSettings = {
 	clientId: '',
 	clientSecret: '',
 	redirectPort: DEFAULT_REDIRECT_PORT,
+	driveFolderName: DEFAULT_DRIVE_FOLDER_NAME,
 	debounceMs: DEFAULT_DEBOUNCE_MS,
 	autoSync: true,
 };
@@ -84,6 +90,31 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 
 		new Setting(containerEl).setName('Sync').setHeading();
 
+		const driveFolderSetting = new Setting(containerEl)
+			.setName('Google Drive folder')
+			.setDesc(
+				'Name of the top-level Google Drive folder used for this vault. The folder is created if it does not exist.',
+			)
+			.addText((text) =>
+				text
+					.setPlaceholder(DEFAULT_DRIVE_FOLDER_NAME)
+					.setValue(this.plugin.settings.driveFolderName)
+					.onChange(async (value) => {
+						await this.plugin.setDriveFolderName(value);
+					}),
+			);
+		if (this.plugin.tokenData) {
+			driveFolderSetting.addButton((btn) =>
+				btn
+					.setButtonText('Apply')
+					.onClick(async () => {
+						await this.plugin.connectDrive();
+						// eslint-disable-next-line @typescript-eslint/no-deprecated
+						this.display();
+					}),
+			);
+		}
+
 		new Setting(containerEl)
 			.setName('Auto-sync on file changes')
 			.setDesc(
@@ -124,6 +155,8 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 		new Setting(containerEl).setName('Connection').setHeading();
 
 		const connected = !!this.plugin.tokenData;
+		const folderSelectionCurrent =
+			this.plugin.isDriveFolderSelectionCurrent();
 
 		const statusEl = containerEl.createDiv({
 			cls: 'drivesync-status',
@@ -139,6 +172,23 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 					}`
 				: 'Not connected.',
 		});
+		if (this.plugin.syncState) {
+			statusEl.createEl('p', {
+				text: `Drive folder: ${this.plugin.syncState.rootFolderName}`,
+			});
+		}
+		if (this.plugin.authorizationUpgradeRequired) {
+			statusEl.createEl('p', {
+				text: 'Reconnect Google Drive to grant access to files that were not created by this plugin.',
+				cls: 'drivesync-warning',
+			});
+		}
+		if (connected && !folderSelectionCurrent) {
+			statusEl.createEl('p', {
+				text: 'Select apply beside Google Drive folder to use the new folder.',
+				cls: 'drivesync-warning',
+			});
+		}
 
 		if (connected) {
 			new Setting(containerEl)
@@ -152,13 +202,7 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 					// eslint-disable-next-line @typescript-eslint/no-deprecated
 						.setWarning()
 						.onClick(async () => {
-							this.plugin.tokenData = null;
-							this.plugin.syncState = null;
-							this.plugin.stopAutoSync();
-							await this.plugin.saveAllData();
-							new Notice(
-								'Drivesync: Disconnected from Google Drive',
-							);
+							await this.plugin.disconnectDrive();
 							// eslint-disable-next-line @typescript-eslint/no-deprecated
 						this.display();
 						}),

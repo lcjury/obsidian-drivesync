@@ -31,6 +31,10 @@ function authHeaders(accessToken: string): Record<string, string> {
 	return { Authorization: `Bearer ${accessToken}` };
 }
 
+function escapeDriveQueryValue(value: string): string {
+	return value.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null;
 }
@@ -99,8 +103,9 @@ export async function findOrCreateFolder(
 	accessToken: string,
 	folderName: string,
 ): Promise<string> {
+	const escapedFolderName = escapeDriveQueryValue(folderName);
 	const query = encodeURIComponent(
-		`name = '${folderName}' and mimeType = 'application/vnd.google-apps.folder' and trashed = false`,
+		`name = '${escapedFolderName}' and mimeType = 'application/vnd.google-apps.folder' and 'root' in parents and trashed = false`,
 	);
 	const listResponse = await requestDriveUrl({
 		url: `${DRIVE_FILES_URL}?q=${query}&fields=files(id,name)&pageSize=10`,
@@ -139,8 +144,9 @@ export async function findOrCreateFolderPath(
 	let currentParentId = rootFolderId;
 
 	for (const part of parts) {
+		const escapedPart = escapeDriveQueryValue(part);
 		const query = encodeURIComponent(
-			`name = '${part}' and mimeType = 'application/vnd.google-apps.folder' and '${currentParentId}' in parents and trashed = false`,
+			`name = '${escapedPart}' and mimeType = 'application/vnd.google-apps.folder' and '${currentParentId}' in parents and trashed = false`,
 		);
 		const response = await requestDriveUrl({
 			url: `${DRIVE_FILES_URL}?q=${query}&fields=files(id,name)&pageSize=1`,
@@ -183,7 +189,7 @@ export async function listFilesInFolder(
 		const query = encodeURIComponent(
 			`'${folderId}' in parents and trashed = false`,
 		);
-		let url = `${DRIVE_FILES_URL}?q=${query}&fields=files(id,name,md5Checksum,modifiedTime,mimeType,size,trashed,parents,appProperties)&pageSize=1000`;
+		let url = `${DRIVE_FILES_URL}?q=${query}&fields=nextPageToken,files(id,name,md5Checksum,modifiedTime,mimeType,size,trashed,parents,appProperties)&pageSize=1000`;
 		if (pageToken) {
 			url += `&pageToken=${pageToken}`;
 		}

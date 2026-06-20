@@ -3,3 +3,7 @@
 	display: flex;
 	gap: 8px;
 }
+
+.drivesync-warning {
+	color: var(--text-warning);
+}

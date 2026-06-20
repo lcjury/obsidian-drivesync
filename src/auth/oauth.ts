@@ -262,6 +262,7 @@ export async function startAuthFlow(
 		accessToken: data.access_token,
 		refreshToken: data.refresh_token,
 		expiresAt: Date.now() + (data.expires_in - 60) * 1000,
+		scope: OAUTH_SCOPE,
 	};
 }
 
@@ -327,5 +328,6 @@ export async function getValidAccessToken(
 		accessToken,
 		refreshToken: tokenData.refreshToken,
 		expiresAt,
+		scope: tokenData.scope,
 	};
 }

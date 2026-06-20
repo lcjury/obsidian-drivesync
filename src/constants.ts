@@ -4,7 +4,7 @@ export const DRIVE_API_BASE = 'https://www.googleapis.com/drive/v3';
 export const DRIVE_UPLOAD_BASE = 'https://www.googleapis.com/upload/drive/v3';
 export const DRIVE_FILES_URL = `${DRIVE_API_BASE}/files`;
 
-export const OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive.file';
+export const OAUTH_SCOPE = 'https://www.googleapis.com/auth/drive';
 
 export const DEFAULT_REDIRECT_PORT = 8520;
 export const DEFAULT_DRIVE_FOLDER_NAME = 'Obsidian Vault';

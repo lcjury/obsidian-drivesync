@@ -11,7 +11,11 @@ import { SyncCoordinator } from './drive/coordinator';
 import { startWatcher } from './watcher';
 import { DrivesyncStatusView, STATUS_VIEW_TYPE } from './ui/status-view';
 import { initLogger, flushAndClose, log } from './utils/logger';
-import { STARTUP_WATCHER_QUIET_MS } from './constants';
+import {
+	DEFAULT_DRIVE_FOLDER_NAME,
+	OAUTH_SCOPE,
+	STARTUP_WATCHER_QUIET_MS,
+} from './constants';
 
 function promptForAuthCode(app: App): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
@@ -82,6 +86,7 @@ export default class ObsidianDriveSync extends Plugin {
 	settings!: DrivesyncSettings;
 	tokenData: TokenData | null = null;
 	syncState: SyncState | null = null;
+	authorizationUpgradeRequired = false;
 	syncing = false;
 	syncCoordinator!: SyncCoordinator;
 
@@ -145,9 +150,17 @@ export default class ObsidianDriveSync extends Plugin {
 		this.updateStatusBar();
 
 		this.app.workspace.onLayoutReady(() => {
+			if (this.authorizationUpgradeRequired) {
+				new Notice(
+					'Drivesync: Google Drive permissions changed. Reconnect Google Drive to continue syncing.',
+					10000,
+				);
+			}
+
 			if (!this.settings.autoSync || !this.tokenData || !this.syncState) {
 				return;
 			}
+			if (!this.isDriveFolderSelectionCurrent()) return;
 
 			this.autoSyncStartTimer = window.setTimeout(() => {
 				this.autoSyncStartTimer = null;
@@ -173,8 +186,17 @@ export default class ObsidianDriveSync extends Plugin {
 			DEFAULT_SETTINGS,
 			(data ?? {}) as Partial<DrivesyncSettings>,
 		);
-		this.tokenData = (data?.tokenData as TokenData | null) ?? null;
+		const storedToken =
+			(data?.tokenData as TokenData | null) ?? null;
+		this.authorizationUpgradeRequired =
+			storedToken !== null && storedToken.scope !== OAUTH_SCOPE;
+		this.tokenData = this.authorizationUpgradeRequired
+			? null
+			: storedToken;
 		this.syncState = (data?.syncState as SyncState | null) ?? null;
+		if (this.syncState && !this.syncState.rootFolderName) {
+			this.syncState.rootFolderName = DEFAULT_DRIVE_FOLDER_NAME;
+		}
 		this.updateStatusBar();
 	}
 
@@ -237,6 +259,8 @@ export default class ObsidianDriveSync extends Plugin {
 		if (!this.statusBarItem) return;
 		if (this.syncing) {
 			this.statusBarItem.setText('Drivesync: Syncing...');
+		} else if (this.tokenData && !this.isDriveFolderSelectionCurrent()) {
+			this.statusBarItem.setText('Drivesync: Reconnect to apply folder');
 		} else if (this.tokenData) {
 			this.statusBarItem.setText('Drivesync: Connected');
 		} else {
@@ -244,10 +268,38 @@ export default class ObsidianDriveSync extends Plugin {
 		}
 	}
 
+	isDriveFolderSelectionCurrent(): boolean {
+		return (
+			this.syncState !== null &&
+			this.syncState.rootFolderName ===
+				this.settings.driveFolderName.trim()
+		);
+	}
+
+	async setDriveFolderName(value: string): Promise<void> {
+		const folderName = value.trim();
+		if (this.settings.driveFolderName === folderName) return;
+
+		this.settings.driveFolderName = folderName;
+		if (!this.isDriveFolderSelectionCurrent()) {
+			this.stopAutoSync();
+			this.syncCoordinator.clear();
+		}
+		await this.saveAllData();
+		this.updateStatusBar();
+	}
+
 	async connectDrive(): Promise<void> {
 		if (!this.settings.clientId) {
 			new Notice(
 				'Drivesync: Please set your Google OAUTH client ID in settings first.',
+			);
+			return;
+		}
+		const driveFolderName = this.settings.driveFolderName.trim();
+		if (!driveFolderName) {
+			new Notice(
+				'Drivesync: Enter a Google Drive folder name in settings first.',
 			);
 			return;
 		}
@@ -263,19 +315,25 @@ export default class ObsidianDriveSync extends Plugin {
 					? () => promptForAuthCode(this.app)
 					: undefined,
 			);
-			this.tokenData = tokenData;
 
 			const accessToken = tokenData.accessToken;
 			const rootFolderId = await findOrCreateFolder(
 				accessToken,
-				'Obsidian Vault',
+				driveFolderName,
 			);
 
-			this.syncState = {
-				files: {},
-				rootFolderId,
-				lastSyncTime: 0,
-			};
+			this.tokenData = tokenData;
+			if (this.syncState?.rootFolderId !== rootFolderId) {
+				this.syncState = {
+					files: {},
+					rootFolderId,
+					rootFolderName: driveFolderName,
+					lastSyncTime: 0,
+				};
+			} else {
+				this.syncState.rootFolderName = driveFolderName;
+			}
+			this.authorizationUpgradeRequired = false;
 			this.syncCoordinator.clear();
 
 			await this.saveAllData();
@@ -299,6 +357,7 @@ export default class ObsidianDriveSync extends Plugin {
 		this.syncCoordinator.clear();
 		this.tokenData = null;
 		this.syncState = null;
+		this.authorizationUpgradeRequired = false;
 		this.stopAutoSync();
 		await this.saveAllData();
 		this.updateStatusBar();
@@ -309,6 +368,12 @@ export default class ObsidianDriveSync extends Plugin {
 	async runFullSync(): Promise<void> {
 		if (this.syncing) {
 			new Notice('Drivesync: Sync already in progress.');
+			return;
+		}
+		if (!this.isDriveFolderSelectionCurrent()) {
+			new Notice(
+				'Drivesync: Reconnect Google Drive to apply the selected folder.',
+			);
 			return;
 		}
 
@@ -325,6 +390,7 @@ export default class ObsidianDriveSync extends Plugin {
 	startAutoSync(quietMs = 0): void {
 		if (!this.settings.autoSync) return;
 		if (!this.tokenData) return;
+		if (!this.isDriveFolderSelectionCurrent()) return;
 		this.stopAutoSync();
 		this.watcherCleanup = startWatcher(this, { quietMs });
 	}

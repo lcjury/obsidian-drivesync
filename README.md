@@ -24,7 +24,7 @@ Conflicts are resolved automatically: the newest version wins, and the older ver
 1. Go to **APIs & Services → OAuth consent screen**
    - Choose **External** (unless you're in a Google Workspace organization)
    - Fill in the app name, user support email, and developer contact email
-   - Add the scope `.../auth/drive.file`
+   - Add the scope `https://www.googleapis.com/auth/drive`
    - Under **Test users**, add your Google account email and click Save
    - You don't need to publish the app — keep it in Testing mode
 
@@ -39,10 +39,28 @@ Conflicts are resolved automatically: the newest version wins, and the older ver
 
 1. Open Obsidian → **Settings → Community plugins → DriveSync** (gear icon)
 2. Paste your **Client ID** and **Client secret**
-3. Leave the redirect port at `8520` (or change it if you used a different one in step 2)
-4. Run the command **Connect Google Drive** from the command palette (`Ctrl+P`)
-5. Your browser will open — sign in with your Google account and authorize the app
-6. The initial sync will run automatically
+3. Enter the top-level Google Drive folder to use for this vault
+4. Leave the redirect port at `8520` (or change it if you used a different one in step 2)
+5. Run the command **Connect Google Drive** from the command palette (`Ctrl+P`)
+6. Your browser will open — sign in with your Google account and authorize the app
+7. The initial sync will run automatically
+
+DriveSync requests full Google Drive access because it must discover, download,
+update, move, and delete files that already exist inside the synchronized
+folder. Google limits the narrower `drive.file` scope to files created by the
+plugin or explicitly selected through Google Picker.
+
+### Upgrading from `drive.file`
+
+If you connected an earlier version of DriveSync:
+
+1. Add `https://www.googleapis.com/auth/drive` to the OAuth consent screen in
+   Google Cloud Console.
+2. Open DriveSync settings and select **Connect** again.
+3. Approve the new permission request.
+
+The plugin preserves the existing sync index when reconnecting to the same
+Drive folder.
 
 ## Commands
 
@@ -60,6 +78,7 @@ Conflicts are resolved automatically: the newest version wins, and the older ver
 | Google OAuth client ID | — | From Google Cloud Console |
 | Google OAuth client secret | — | From Google Cloud Console |
 | Redirect port | `8520` | Local port for OAuth callback |
+| Google Drive folder | `Obsidian Vault` | Top-level Drive folder used for this vault |
 | Auto-sync on file changes | On | Upload changes as you edit |
 | Debounce (ms) | `2000` | Wait time after last change before uploading |
 
