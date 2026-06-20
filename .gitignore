@@ -17,6 +17,8 @@ main.js
 
 # plugin data file
 data.json
+drivesync.log
+session-*.md
 
 # Exclude macOS Finder (System Explorer) View States
 .DS_Store
