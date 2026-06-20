@@ -3,6 +3,7 @@ export interface TrackedFile {
 	driveId: string;
 	remoteMd5: string | null;
 	remoteMtime: number;
+	remoteParentId?: string | null;
 	localMtime: number;
 }
 

@@ -1,6 +1,5 @@
 import { TFile, type TAbstractFile } from 'obsidian';
 import type ObsidianDriveSync from './main';
-import { syncSingleLocalChange, syncSingleLocalDelete, syncSingleLocalRename } from './drive/sync';
 import { log } from './utils/logger';
 import { ACTIVE_FILE_DEBOUNCE_MS } from './constants';
 
@@ -40,7 +39,6 @@ export function startWatcher(
 
 	function getSyncableFile(file: TAbstractFile): TFile | null {
 		if (Date.now() < ignoreUntil) return null;
-		if (plugin.syncing) return null;
 		if (!(file instanceof TFile)) return null;
 		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return null;
 
@@ -74,7 +72,7 @@ export function startWatcher(
 								: Math.min(nextDelay, delayMs);
 						continue;
 					}
-					await syncSingleLocalChange(plugin, file);
+					plugin.syncCoordinator.markFile(file);
 				}
 				return nextDelay;
 			})
@@ -109,21 +107,19 @@ export function startWatcher(
 	});
 	const deleteRef = plugin.app.vault.on('delete', (file) => {
 		if (Date.now() < ignoreUntil) return;
-		if (plugin.syncing) return;
 		if (!(file instanceof TFile)) return;
 		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return;
 		log(`DriveSync watcher: deleted ${file.path}`);
-		void syncSingleLocalDelete(plugin, file.path);
+		plugin.syncCoordinator.markDeleted(file);
 	});
 	const renameRef = plugin.app.vault.on('rename', (file, oldPath) => {
 		if (Date.now() < ignoreUntil) return;
-		if (plugin.syncing) return;
 		if (!(file instanceof TFile)) return;
 		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return;
 		log(
 			`DriveSync watcher: renamed ${oldPath} → ${file.path}`,
 		);
-		void syncSingleLocalRename(plugin, oldPath, file.path);
+		plugin.syncCoordinator.markRename(file, oldPath);
 	});
 
 	plugin.registerEvent(createRef);

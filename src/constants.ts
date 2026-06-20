@@ -11,6 +11,7 @@ export const DEFAULT_DRIVE_FOLDER_NAME = 'Obsidian Vault';
 export const DEFAULT_DEBOUNCE_MS = 2000;
 export const STARTUP_WATCHER_QUIET_MS = 3000;
 export const ACTIVE_FILE_DEBOUNCE_MS = 15000;
+export const SYNC_CONCURRENCY = 6;
 
 export const MIME_MAP: Record<string, string> = {
 	md: 'text/markdown',

@@ -7,7 +7,7 @@ import {
 import type { TokenData, SyncState } from './types';
 import { startAuthFlow } from './auth/oauth';
 import { findOrCreateFolder } from './drive/client';
-import { fullSync } from './drive/sync';
+import { SyncCoordinator } from './drive/coordinator';
 import { startWatcher } from './watcher';
 import { DrivesyncStatusView, STATUS_VIEW_TYPE } from './ui/status-view';
 import { initLogger, flushAndClose, log } from './utils/logger';
@@ -75,13 +75,23 @@ export default class ObsidianDriveSync extends Plugin {
 	tokenData: TokenData | null = null;
 	syncState: SyncState | null = null;
 	syncing = false;
+	syncCoordinator!: SyncCoordinator;
 
 	private watcherCleanup: (() => void) | null = null;
 	private statusBarItem: HTMLElement | null = null;
 	private autoSyncStartTimer: number | null = null;
+	private saveVersion = 0;
+	private savedVersion = 0;
+	private saveRunning = false;
+	private saveWaiters: Array<{
+		version: number;
+		resolve: () => void;
+		reject: (reason: unknown) => void;
+	}> = [];
 
 	async onload(): Promise<void> {
 		await this.loadAllData();
+		this.syncCoordinator = new SyncCoordinator(this);
 		initLogger(this.app.vault, this.app.vault.configDir);
 
 		this.addRibbonIcon('refresh-cw', 'Drivesync: Sync now', () => {
@@ -144,6 +154,7 @@ export default class ObsidianDriveSync extends Plugin {
 			this.autoSyncStartTimer = null;
 		}
 		this.stopAutoSync();
+		this.syncCoordinator.stop();
 		void flushAndClose();
 	}
 
@@ -159,12 +170,59 @@ export default class ObsidianDriveSync extends Plugin {
 		this.updateStatusBar();
 	}
 
-	async saveAllData(): Promise<void> {
-		await this.saveData({
-			...this.settings,
-			tokenData: this.tokenData,
-			syncState: this.syncState,
+	saveAllData(): Promise<void> {
+		const version = ++this.saveVersion;
+		const completion = new Promise<void>((resolve, reject) => {
+			this.saveWaiters.push({ version, resolve, reject });
 		});
+		if (!this.saveRunning) void this.flushDataSaves();
+		return completion;
+	}
+
+	private async flushDataSaves(): Promise<void> {
+		this.saveRunning = true;
+		try {
+			while (this.savedVersion < this.saveVersion) {
+				const targetVersion = this.saveVersion;
+				try {
+					await this.saveData({
+						...this.settings,
+						tokenData: this.tokenData,
+						syncState: this.syncState,
+					});
+					this.savedVersion = targetVersion;
+					this.resolveSaveWaiters(targetVersion);
+				} catch (err) {
+					this.savedVersion = targetVersion;
+					this.rejectSaveWaiters(targetVersion, err);
+				}
+			}
+		} finally {
+			this.saveRunning = false;
+			if (this.savedVersion < this.saveVersion) {
+				void this.flushDataSaves();
+			}
+		}
+	}
+
+	private resolveSaveWaiters(version: number): void {
+		const completed = this.saveWaiters.filter(
+			(waiter) => waiter.version <= version,
+		);
+		this.saveWaiters = this.saveWaiters.filter(
+			(waiter) => waiter.version > version,
+		);
+		for (const waiter of completed) waiter.resolve();
+	}
+
+	private rejectSaveWaiters(version: number, reason: unknown): void {
+		const failed = this.saveWaiters.filter(
+			(waiter) => waiter.version <= version,
+		);
+		this.saveWaiters = this.saveWaiters.filter(
+			(waiter) => waiter.version > version,
+		);
+		for (const waiter of failed) waiter.reject(reason);
 	}
 
 	updateStatusBar(): void {
@@ -210,6 +268,7 @@ export default class ObsidianDriveSync extends Plugin {
 				rootFolderId,
 				lastSyncTime: 0,
 			};
+			this.syncCoordinator.clear();
 
 			await this.saveAllData();
 			this.updateStatusBar();
@@ -229,6 +288,7 @@ export default class ObsidianDriveSync extends Plugin {
 	}
 
 	async disconnectDrive(): Promise<void> {
+		this.syncCoordinator.clear();
 		this.tokenData = null;
 		this.syncState = null;
 		this.stopAutoSync();
@@ -247,7 +307,7 @@ export default class ObsidianDriveSync extends Plugin {
 		this.syncing = true;
 		this.updateStatusBar();
 		try {
-			await fullSync(this);
+			await this.syncCoordinator.runFullSync();
 		} finally {
 			this.syncing = false;
 			this.updateStatusBar();

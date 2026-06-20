@@ -7,6 +7,9 @@ import {
 type RequestUrlOptions = Exclude<Parameters<typeof requestUrl>[0], string>;
 type RequestUrlResponse = Awaited<ReturnType<typeof requestUrl>>;
 
+const DRIVE_FILE_FIELDS =
+	'id,name,md5Checksum,modifiedTime,mimeType,size,trashed,parents,appProperties';
+
 export interface DriveFile {
 	id: string;
 	name: string;
@@ -267,7 +270,7 @@ async function createFileMetadata(
 	mimeType: string,
 ): Promise<DriveFile> {
 	const response = await requestDriveUrl({
-		url: DRIVE_FILES_URL,
+		url: `${DRIVE_FILES_URL}?fields=${DRIVE_FILE_FIELDS}`,
 		method: 'POST',
 		headers: {
 			...authHeaders(accessToken),
@@ -289,7 +292,7 @@ async function uploadMediaContent(
 	mimeType: string,
 ): Promise<DriveFile> {
 	const response = await requestDriveUrl({
-		url: `${DRIVE_UPLOAD_BASE}/files/${fileId}?uploadType=media`,
+		url: `${DRIVE_UPLOAD_BASE}/files/${fileId}?uploadType=media&fields=${DRIVE_FILE_FIELDS}`,
 		method: 'PATCH',
 		headers: {
 			...authHeaders(accessToken),
@@ -332,6 +335,7 @@ export async function renameFile(
 	oldPath: string,
 	newPath: string,
 	rootFolderId: string,
+	resolveParentFolder?: (folderPath: string) => Promise<string>,
 ): Promise<DriveFile> {
 	const oldDir = oldPath.includes('/')
 		? oldPath.substring(0, oldPath.lastIndexOf('/'))
@@ -344,11 +348,18 @@ export async function renameFile(
 	const dirChanged = oldDir !== newDir;
 
 	const newParentId = dirChanged
-		? await findOrCreateFolderPath(accessToken, rootFolderId, newDir)
+		? await (resolveParentFolder
+				? resolveParentFolder(newDir)
+				: findOrCreateFolderPath(
+						accessToken,
+						rootFolderId,
+						newDir,
+					))
 		: null;
 
 	let url = `${DRIVE_FILES_URL}/${fileId}`;
 	const params = new URLSearchParams();
+	params.set('fields', DRIVE_FILE_FIELDS);
 	if (dirChanged) {
 		params.set('addParents', newParentId!);
 		const file = await getFileMetadata(accessToken, fileId);
@@ -357,9 +368,7 @@ export async function renameFile(
 			params.set('removeParents', oldParent);
 		}
 	}
-	if (params.toString()) {
-		url += `?${params.toString()}`;
-	}
+	url += `?${params.toString()}`;
 
 	const response = await requestDriveUrl({
 		url,
@@ -407,7 +416,7 @@ export async function getFileMetadata(
 	fileId: string,
 ): Promise<DriveFile> {
 	const response = await requestDriveUrl({
-		url: `${DRIVE_FILES_URL}/${fileId}?fields=id,name,md5Checksum,modifiedTime,mimeType,size,trashed,parents,appProperties`,
+		url: `${DRIVE_FILES_URL}/${fileId}?fields=${DRIVE_FILE_FIELDS}`,
 		headers: authHeaders(accessToken),
 	});
 	return response.json as DriveFile;
