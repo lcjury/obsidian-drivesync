@@ -1,6 +1,10 @@
-import { Notice, TFile } from 'obsidian';
+import { Notice } from 'obsidian';
 import type ObsidianDriveSync from '../main';
-import type { SyncResult, TrackedFile } from '../types';
+import type {
+	LocalFileState,
+	SyncResult,
+	TrackedFile,
+} from '../types';
 import { getValidAccessToken } from '../auth/oauth';
 import { SYNC_CONCURRENCY } from '../constants';
 import {
@@ -15,7 +19,7 @@ import { SyncServiceManager } from './sync-services';
 interface IdentityRecord {
 	key: string;
 	driveId?: string;
-	localFile?: TFile;
+	localFile?: LocalFileState;
 	pathHint?: string;
 	remoteState?: RemoteFileState;
 }
@@ -65,7 +69,7 @@ function showSummary(result: SyncResult): void {
 export class SyncCoordinator {
 	private readonly identities = new Map<string, IdentityRecord>();
 	private readonly driveKeys = new Map<string, string>();
-	private readonly localKeys = new WeakMap<TFile, string>();
+	private readonly pathKeys = new Map<string, string>();
 	private readonly pending = new Set<string>();
 	private readonly active = new Set<string>();
 	private readonly idleWaiters = new Set<() => void>();
@@ -81,38 +85,43 @@ export class SyncCoordinator {
 
 	constructor(private readonly plugin: ObsidianDriveSync) {}
 
-	markFile(file: TFile): void {
-		const tracked = findTrackedByPath(this.plugin, file.path);
-		const identity = this.getIdentity(file, tracked?.driveId);
-		identity.localFile = file;
-		identity.pathHint = file.path;
+	markPath(path: string): void {
+		const tracked = findTrackedByPath(this.plugin, path);
+		const identity = this.getIdentity(undefined, tracked?.driveId, path);
+		identity.localFile = undefined;
+		identity.pathHint = path;
 		this.enqueue(identity.key);
 	}
 
-	markRename(file: TFile, oldPath: string): void {
+	markRename(path: string, oldPath: string): void {
 		const tracked =
 			findTrackedByPath(this.plugin, oldPath) ??
-			findTrackedByPath(this.plugin, file.path);
-		const identity = this.getIdentity(file, tracked?.driveId);
-		identity.localFile = file;
-		identity.pathHint = file.path;
+			findTrackedByPath(this.plugin, path);
+		const identity = this.getIdentity(
+			undefined,
+			tracked?.driveId,
+			oldPath,
+		);
+		identity.localFile = undefined;
+		identity.pathHint = path;
+		this.pathKeys.set(path, identity.key);
 		this.enqueue(identity.key);
 	}
 
-	markDeleted(file: TFile): void {
-		const tracked = findTrackedByPath(this.plugin, file.path);
-		const identity = this.getIdentity(file, tracked?.driveId);
+	markDeleted(path: string): void {
+		const tracked = findTrackedByPath(this.plugin, path);
+		const identity = this.getIdentity(undefined, tracked?.driveId, path);
 		identity.localFile = undefined;
-		identity.pathHint = file.path;
+		identity.pathHint = path;
 		this.enqueue(identity.key);
 	}
 
 	clear(): void {
 		this.pending.clear();
 		this.refreshRequested = false;
-		for (const identity of this.identities.values()) {
-			identity.remoteState = undefined;
-		}
+		this.identities.clear();
+		this.driveKeys.clear();
+		this.pathKeys.clear();
 		this.services.clearRemoteCache();
 		this.resolveIdleIfNeeded();
 	}
@@ -134,10 +143,15 @@ export class SyncCoordinator {
 	}
 
 	private getIdentity(
-		localFile: TFile | undefined,
+		localFile: LocalFileState | undefined,
 		driveId: string | undefined,
+		pathHint?: string,
 	): IdentityRecord {
-		let key = localFile ? this.localKeys.get(localFile) : undefined;
+		let key = localFile
+			? this.pathKeys.get(localFile.path)
+			: pathHint
+				? this.pathKeys.get(pathHint)
+				: undefined;
 		key ??= driveId ? this.driveKeys.get(driveId) : undefined;
 
 		if (!key) {
@@ -148,8 +162,9 @@ export class SyncCoordinator {
 		const identity = this.identities.get(key)!;
 		if (localFile) {
 			identity.localFile = localFile;
-			this.localKeys.set(localFile, key);
+			this.pathKeys.set(localFile.path, key);
 		}
+		if (pathHint) this.pathKeys.set(pathHint, key);
 		if (driveId) {
 			identity.driveId = driveId;
 			this.driveKeys.set(driveId, key);
@@ -212,7 +227,7 @@ export class SyncCoordinator {
 			if (outcome.localFile) {
 				identity.localFile = outcome.localFile;
 				identity.pathHint = outcome.localFile.path;
-				this.localKeys.set(outcome.localFile, key);
+				this.pathKeys.set(outcome.localFile.path, key);
 			}
 			if (outcome.needsFullSync) {
 				this.refreshRequested = true;
@@ -342,7 +357,11 @@ export class SyncCoordinator {
 	}
 
 	private seed(seed: FullSyncSeed): void {
-		const identity = this.getIdentity(seed.localFile, seed.driveId);
+		const identity = this.getIdentity(
+			seed.localFile,
+			seed.driveId,
+			seed.pathHint,
+		);
 		identity.pathHint = seed.pathHint;
 		identity.remoteState = seed.remoteState;
 		this.pending.add(identity.key);

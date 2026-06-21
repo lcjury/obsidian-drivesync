@@ -1,7 +1,8 @@
-import type { TFile, Vault } from 'obsidian';
-import type { TrackedFile } from './types';
+import type { DataAdapter } from 'obsidian';
 import type { DriveFile } from './drive/client';
 import { updateFileContent } from './drive/client';
+import { isConfigPath } from './path-policy';
+import { writeLocalFile } from './local-files';
 
 interface ConflictParams {
 	path: string;
@@ -9,16 +10,14 @@ interface ConflictParams {
 	remoteContent: ArrayBuffer;
 	localMtime: number;
 	remoteMtime: number;
-	parentDriveId: string;
-	tracked: TrackedFile;
-	vault: Vault;
-	accessToken: string;
+	configDir: string;
+	adapter: DataAdapter;
 }
 
 async function createConflictedCopy(
 	basePath: string,
 	content: ArrayBuffer,
-	vault: Vault,
+	adapter: DataAdapter,
 ): Promise<string> {
 	const extIndex = basePath.lastIndexOf('.');
 	const baseName = extIndex > 0 ? basePath.substring(0, extIndex) : basePath;
@@ -27,14 +26,12 @@ async function createConflictedCopy(
 	let conflictedPath = `${baseName} (conflicted)${ext}`;
 	let counter = 2;
 
-	while (true) {
-		const existing = vault.getAbstractFileByPath(conflictedPath);
-		if (!existing) break;
+	while (await adapter.exists(conflictedPath)) {
 		conflictedPath = `${baseName} (conflicted ${counter})${ext}`;
 		counter++;
 	}
 
-	await vault.createBinary(conflictedPath, content);
+	await adapter.writeBinary(conflictedPath, content);
 	return conflictedPath;
 }
 
@@ -55,12 +52,31 @@ export async function resolveConflict(
 		localMtime,
 		remoteMtime,
 	} = params;
+	const localWins =
+		localMtime >= remoteMtime ||
+		(localMtime === 0 && remoteMtime === 0);
 
-	if (localMtime >= remoteMtime || (localMtime === 0 && remoteMtime === 0)) {
+	if (isConfigPath(params.path, params.configDir)) {
+		return localWins
+			? {
+					winnerPath: params.path,
+					winnerContent: localContent,
+					loserPath: params.path,
+					loserContent: remoteContent,
+				}
+			: {
+					winnerPath: params.path,
+					winnerContent: remoteContent,
+					loserPath: params.path,
+					loserContent: localContent,
+				};
+	}
+
+	if (localWins) {
 		const conflictedPath = await createConflictedCopy(
 			params.path,
 			remoteContent,
-			params.vault,
+			params.adapter,
 		);
 		return {
 			winnerPath: params.path,
@@ -74,7 +90,7 @@ export async function resolveConflict(
 	const conflictedPath = await createConflictedCopy(
 		params.path,
 		localContent,
-		params.vault,
+		params.adapter,
 	);
 	return {
 		winnerPath: params.path,
@@ -88,14 +104,10 @@ export async function resolveConflict(
 export async function applyConflictToLocal(
 	path: string,
 	content: ArrayBuffer,
-	vault: Vault,
+	adapter: DataAdapter,
+	mtime?: number,
 ): Promise<void> {
-	const existing = vault.getAbstractFileByPath(path) as TFile | null;
-	if (existing) {
-		await vault.modifyBinary(existing, content);
-	} else {
-		await vault.createBinary(path, content);
-	}
+	await writeLocalFile(adapter, path, content, mtime);
 }
 
 export async function uploadConflictToDrive(

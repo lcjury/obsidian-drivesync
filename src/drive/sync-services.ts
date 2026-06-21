@@ -52,6 +52,7 @@ export class SyncServiceManager {
 
 	private ensureLocalParent(filePath: string): Promise<void> {
 		const operation = this.localFolderTail.then(async () => {
+			const adapter = this.plugin.app.vault.adapter;
 			const dir = filePath.includes('/')
 				? filePath.substring(0, filePath.lastIndexOf('/'))
 				: '';
@@ -60,9 +61,8 @@ export class SyncServiceManager {
 			let currentPath = '';
 			for (const part of dir.split('/')) {
 				currentPath += (currentPath ? '/' : '') + part;
-				if (!this.plugin.app.vault.getAbstractFileByPath(currentPath)) {
-					await this.plugin.app.vault.createFolder(currentPath);
-				}
+				if (await adapter.exists(currentPath)) continue;
+				await adapter.mkdir(currentPath);
 			}
 		});
 		this.localFolderTail = operation.then(

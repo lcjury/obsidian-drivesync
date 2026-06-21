@@ -2,6 +2,7 @@ import { TFile, type TAbstractFile } from 'obsidian';
 import type ObsidianDriveSync from './main';
 import { log } from './utils/logger';
 import { ACTIVE_FILE_DEBOUNCE_MS } from './constants';
+import { isExcludedPath } from './path-policy';
 
 interface WatcherOptions {
 	quietMs?: number;
@@ -40,7 +41,7 @@ export function startWatcher(
 	function getSyncableFile(file: TAbstractFile): TFile | null {
 		if (Date.now() < ignoreUntil) return null;
 		if (!(file instanceof TFile)) return null;
-		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return null;
+		if (isExcludedPath(file.path, plugin.app.vault.configDir)) return null;
 
 		const tracked = plugin.syncState?.files[file.path];
 		if (tracked && file.stat.mtime === tracked.localMtime) return null;
@@ -72,7 +73,7 @@ export function startWatcher(
 								: Math.min(nextDelay, delayMs);
 						continue;
 					}
-					plugin.syncCoordinator.markFile(file);
+					plugin.syncCoordinator.markPath(file.path);
 				}
 				return nextDelay;
 			})
@@ -108,18 +109,18 @@ export function startWatcher(
 	const deleteRef = plugin.app.vault.on('delete', (file) => {
 		if (Date.now() < ignoreUntil) return;
 		if (!(file instanceof TFile)) return;
-		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return;
+		if (isExcludedPath(file.path, plugin.app.vault.configDir)) return;
 		log(`DriveSync watcher: deleted ${file.path}`);
-		plugin.syncCoordinator.markDeleted(file);
+		plugin.syncCoordinator.markDeleted(file.path);
 	});
 	const renameRef = plugin.app.vault.on('rename', (file, oldPath) => {
 		if (Date.now() < ignoreUntil) return;
 		if (!(file instanceof TFile)) return;
-		if (file.path.startsWith(plugin.app.vault.configDir + '/')) return;
+		if (isExcludedPath(file.path, plugin.app.vault.configDir)) return;
 		log(
 			`DriveSync watcher: renamed ${oldPath} → ${file.path}`,
 		);
-		plugin.syncCoordinator.markRename(file, oldPath);
+		plugin.syncCoordinator.markRename(file.path, oldPath);
 	});
 
 	plugin.registerEvent(createRef);

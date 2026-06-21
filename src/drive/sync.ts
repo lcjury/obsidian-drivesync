@@ -1,6 +1,9 @@
-import { TFile } from 'obsidian';
 import type ObsidianDriveSync from '../main';
-import type { SyncResult, TrackedFile } from '../types';
+import type {
+	LocalFileState,
+	SyncResult,
+	TrackedFile,
+} from '../types';
 import {
 	downloadFile,
 	type DriveFile,
@@ -13,6 +16,12 @@ import {
 import { getMimeType } from '../constants';
 import { applyConflictToLocal, resolveConflict } from '../conflict';
 import { log } from '../utils/logger';
+import {
+	getLocalFile,
+	readLocalFile,
+	writeLocalFile,
+} from '../local-files';
+import { isConfigPath } from '../path-policy';
 
 export interface RemoteFileState {
 	file: DriveFile | null;
@@ -21,7 +30,7 @@ export interface RemoteFileState {
 
 export interface ReconcileInput {
 	driveId?: string;
-	localFile?: TFile;
+	localFile?: LocalFileState;
 	pathHint?: string;
 	remoteState?: RemoteFileState;
 }
@@ -33,7 +42,7 @@ export interface ReconcileServices {
 
 export interface ReconcileOutcome extends SyncResult {
 	driveId?: string;
-	localFile?: TFile;
+	localFile?: LocalFileState;
 	needsFullSync?: boolean;
 }
 
@@ -108,24 +117,26 @@ function findTracked(
 	);
 }
 
-function getCurrentLocalFile(
+async function getCurrentLocalFile(
 	plugin: ObsidianDriveSync,
 	input: ReconcileInput,
 	tracked: TrackedFile | null,
 	remotePath: string | undefined,
-): TFile | null {
-	if (input.localFile) {
-		const current = plugin.app.vault.getAbstractFileByPath(
-			input.localFile.path,
-		);
-		if (current instanceof TFile) return current;
-	}
-
-	const candidates = [input.pathHint, tracked?.path, remotePath];
+): Promise<LocalFileState | null> {
+	const candidates = [
+		input.localFile?.path,
+		input.pathHint,
+		tracked?.path,
+		remotePath,
+	];
 	for (const path of candidates) {
 		if (!path) continue;
-		const current = plugin.app.vault.getAbstractFileByPath(path);
-		if (current instanceof TFile) return current;
+		const current = await getLocalFile(
+			plugin.app.vault.adapter,
+			path,
+			plugin.app.vault.configDir,
+		);
+		if (current) return current;
 	}
 
 	return null;
@@ -178,12 +189,15 @@ async function commitTracked(
 async function uploadLocalFile(
 	plugin: ObsidianDriveSync,
 	accessToken: string,
-	localFile: TFile,
+	localFile: LocalFileState,
 	services: ReconcileServices,
 ): Promise<{ driveFile: DriveFile; localMtime: number; path: string }> {
 	const path = localFile.path;
-	const localMtime = localFile.stat.mtime;
-	const content = await plugin.app.vault.readBinary(localFile);
+	const localMtime = localFile.mtime;
+	const content = await readLocalFile(
+		plugin.app.vault.adapter,
+		localFile,
+	);
 	const dir = path.includes('/')
 		? path.substring(0, path.lastIndexOf('/'))
 		: '';
@@ -206,12 +220,16 @@ async function downloadRemoteFile(
 	path: string,
 	remoteFile: DriveFile,
 	services: ReconcileServices,
-): Promise<TFile | null> {
+): Promise<LocalFileState> {
 	const content = await downloadFile(accessToken, remoteFile.id);
 	await services.ensureLocalParent(path);
-	await applyConflictToLocal(path, content, plugin.app.vault);
-	const downloaded = plugin.app.vault.getAbstractFileByPath(path);
-	return downloaded instanceof TFile ? downloaded : null;
+	plugin.suppressConfigWatch();
+	return writeLocalFile(
+		plugin.app.vault.adapter,
+		path,
+		content,
+		remoteMtime(remoteFile),
+	);
 }
 
 function remoteFileChangedSinceTracked(
@@ -267,7 +285,7 @@ async function reconcileTrackedFile(
 	const result = emptyResult();
 	let remoteFile = remoteState.file;
 	let remotePath = remoteState.path ?? tracked.path;
-	let localFile = getCurrentLocalFile(
+	let localFile = await getCurrentLocalFile(
 		plugin,
 		input,
 		tracked,
@@ -277,7 +295,7 @@ async function reconcileTrackedFile(
 	if (remoteFile?.trashed) remoteFile = null;
 
 	if (localFile && remoteFile) {
-		const initialLocalMtime = localFile.stat.mtime;
+		const initialLocalMtime = localFile.mtime;
 		const localChanged = initialLocalMtime !== tracked.localMtime;
 		const remoteChanged =
 			remoteFile.md5Checksum !== tracked.remoteMd5;
@@ -298,15 +316,22 @@ async function reconcileTrackedFile(
 		if (
 			remotePathChanged &&
 			localFile.path === tracked.path &&
-			!plugin.app.vault.getAbstractFileByPath(remotePath)
+			!(await plugin.app.vault.adapter.exists(remotePath))
 		) {
 			await services.ensureLocalParent(remotePath);
-			await plugin.app.fileManager.renameFile(localFile, remotePath);
-			const renamed = plugin.app.vault.getAbstractFileByPath(remotePath);
-			if (renamed instanceof TFile) {
-				localFile = renamed;
-				log(`  renamed local ${tracked.path} → ${remotePath}`);
-			}
+			plugin.suppressConfigWatch();
+			await plugin.app.vault.adapter.rename(
+				localFile.path,
+				remotePath,
+			);
+			const renamed = await getLocalFile(
+				plugin.app.vault.adapter,
+				remotePath,
+				plugin.app.vault.configDir,
+			);
+			if (!renamed) return result;
+			localFile = renamed;
+			log(`  renamed local ${tracked.path} → ${remotePath}`);
 		} else if (localPathChanged && !remotePathChanged) {
 			remoteFile = await renameFile(
 				accessToken,
@@ -322,32 +347,41 @@ async function reconcileTrackedFile(
 		}
 
 		if (localChanged && remoteChanged) {
-			const localContent =
-				await plugin.app.vault.readBinary(localFile);
+			const localContent = await readLocalFile(
+				plugin.app.vault.adapter,
+				localFile,
+			);
 			const remoteContent = await downloadFile(
 				accessToken,
 				remoteFile.id,
 			);
+			const currentRemoteMtime = remoteMtime(remoteFile);
 			const conflict = await resolveConflict({
 				path: localFile.path,
 				localContent,
 				remoteContent,
 				localMtime: initialLocalMtime,
-				remoteMtime: remoteMtime(remoteFile),
-				parentDriveId: plugin.syncState!.rootFolderId,
-				tracked,
-				vault: plugin.app.vault,
-				accessToken,
+				remoteMtime: currentRemoteMtime,
+				configDir: plugin.app.vault.configDir,
+				adapter: plugin.app.vault.adapter,
 			});
+			const winnerMtime =
+				conflict.winnerContent === localContent
+					? initialLocalMtime
+					: currentRemoteMtime;
+			plugin.suppressConfigWatch();
 			await applyConflictToLocal(
 				conflict.winnerPath,
 				conflict.winnerContent,
-				plugin.app.vault,
+				plugin.app.vault.adapter,
+				winnerMtime,
 			);
-			const winner = plugin.app.vault.getAbstractFileByPath(
+			const winner = await getLocalFile(
+				plugin.app.vault.adapter,
 				conflict.winnerPath,
+				plugin.app.vault.configDir,
 			);
-			if (!(winner instanceof TFile)) return result;
+			if (!winner) return result;
 			remoteFile = await updateFileContent(
 				accessToken,
 				remoteFile.id,
@@ -357,13 +391,15 @@ async function reconcileTrackedFile(
 			await commitTracked(
 				plugin,
 				tracked.driveId,
-				trackedFrom(winner.path, remoteFile, winner.stat.mtime),
+				trackedFrom(winner.path, remoteFile, winner.mtime),
 			);
 			result.conflicted++;
 			result.driveId = remoteFile.id;
 			result.localFile = winner;
 			log(
-				`  conflicted ${winner.path} → ${conflict.conflictedPath}`,
+				conflict.conflictedPath
+					? `  conflicted ${winner.path} → ${conflict.conflictedPath}`
+					: `  resolved conflict ${winner.path}`,
 			);
 			return result;
 		}
@@ -371,7 +407,10 @@ async function reconcileTrackedFile(
 		if (localChanged) {
 			const path = localFile.path;
 			const localMtime = initialLocalMtime;
-			const content = await plugin.app.vault.readBinary(localFile);
+			const content = await readLocalFile(
+				plugin.app.vault.adapter,
+				localFile,
+			);
 			remoteFile = await updateFileContent(
 				accessToken,
 				remoteFile.id,
@@ -400,7 +439,7 @@ async function reconcileTrackedFile(
 					trackedFrom(
 						downloaded.path,
 						remoteFile,
-						downloaded.stat.mtime,
+						downloaded.mtime,
 					),
 				);
 				localFile = downloaded;
@@ -426,7 +465,7 @@ async function reconcileTrackedFile(
 
 	if (localFile && !remoteFile) {
 		if (
-			localFile.stat.mtime !== tracked.localMtime ||
+			localFile.mtime !== tracked.localMtime ||
 			localFile.path !== tracked.path
 		) {
 			const uploaded = await uploadLocalFile(
@@ -449,7 +488,8 @@ async function reconcileTrackedFile(
 			result.localFile = localFile;
 			log(`  uploaded   ${uploaded.path}`);
 		} else {
-			await plugin.app.fileManager.trashFile(localFile);
+			plugin.suppressConfigWatch();
+			await plugin.app.vault.adapter.remove(localFile.path);
 			await commitTracked(plugin, tracked.driveId, null);
 			result.deleted++;
 			log(`  deleted    ${tracked.path} (remote)`);
@@ -476,7 +516,7 @@ async function reconcileTrackedFile(
 					trackedFrom(
 						downloaded.path,
 						remoteFile,
-						downloaded.stat.mtime,
+						downloaded.mtime,
 					),
 				);
 				result.downloaded++;
@@ -510,7 +550,7 @@ async function reconcileUntrackedFile(
 			? remoteState.file
 			: null;
 	const remotePath = remoteState.path ?? input.pathHint;
-	const localFile = getCurrentLocalFile(
+	const localFile = await getCurrentLocalFile(
 		plugin,
 		input,
 		null,
@@ -518,37 +558,65 @@ async function reconcileUntrackedFile(
 	);
 
 	if (localFile && remoteFile) {
-		const localContent = await plugin.app.vault.readBinary(localFile);
+		if (isConfigPath(localFile.path, plugin.app.vault.configDir)) {
+			const downloaded = await downloadRemoteFile(
+				plugin,
+				accessToken,
+				remotePath ?? localFile.path,
+				remoteFile,
+				services,
+			);
+			await commitTracked(
+				plugin,
+				remoteFile.id,
+				trackedFrom(
+					downloaded.path,
+					remoteFile,
+					downloaded.mtime,
+				),
+			);
+			result.downloaded++;
+			result.driveId = remoteFile.id;
+			result.localFile = downloaded;
+			log(`  downloaded ${downloaded.path} (remote bootstrap)`);
+			return result;
+		}
+
+		const localContent = await readLocalFile(
+			plugin.app.vault.adapter,
+			localFile,
+		);
 		const remoteContent = await downloadFile(
 			accessToken,
 			remoteFile.id,
 		);
+		const currentRemoteMtime = remoteMtime(remoteFile);
 		const conflict = await resolveConflict({
 			path: localFile.path,
 			localContent,
 			remoteContent,
-			localMtime: localFile.stat.mtime,
-			remoteMtime: remoteMtime(remoteFile),
-			parentDriveId: plugin.syncState!.rootFolderId,
-			tracked: {
-				path: localFile.path,
-				driveId: remoteFile.id,
-				remoteMd5: null,
-				remoteMtime: 0,
-				localMtime: 0,
-			},
-			vault: plugin.app.vault,
-			accessToken,
+			localMtime: localFile.mtime,
+			remoteMtime: currentRemoteMtime,
+			configDir: plugin.app.vault.configDir,
+			adapter: plugin.app.vault.adapter,
 		});
+		const winnerMtime =
+			conflict.winnerContent === localContent
+				? localFile.mtime
+				: currentRemoteMtime;
+		plugin.suppressConfigWatch();
 		await applyConflictToLocal(
 			conflict.winnerPath,
 			conflict.winnerContent,
-			plugin.app.vault,
+			plugin.app.vault.adapter,
+			winnerMtime,
 		);
-		const winner = plugin.app.vault.getAbstractFileByPath(
+		const winner = await getLocalFile(
+			plugin.app.vault.adapter,
 			conflict.winnerPath,
+			plugin.app.vault.configDir,
 		);
-		if (!(winner instanceof TFile)) return result;
+		if (!winner) return result;
 		const updated = await updateFileContent(
 			accessToken,
 			remoteFile.id,
@@ -558,7 +626,7 @@ async function reconcileUntrackedFile(
 		await commitTracked(
 			plugin,
 			remoteFile.id,
-			trackedFrom(winner.path, updated, winner.stat.mtime),
+			trackedFrom(winner.path, updated, winner.mtime),
 		);
 		result.conflicted++;
 		result.driveId = updated.id;
@@ -582,7 +650,7 @@ async function reconcileUntrackedFile(
 				trackedFrom(
 					downloaded.path,
 					remoteFile,
-					downloaded.stat.mtime,
+					downloaded.mtime,
 				),
 			);
 			result.downloaded++;

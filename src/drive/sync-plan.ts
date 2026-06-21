@@ -1,6 +1,8 @@
-import { TFile } from 'obsidian';
 import type ObsidianDriveSync from '../main';
 import { log } from '../utils/logger';
+import { listLocalFiles } from '../local-files';
+import { isExcludedPath } from '../path-policy';
+import type { LocalFileState } from '../types';
 import {
 	driveFileToLocalPath,
 	listAllFilesRecursive,
@@ -10,7 +12,7 @@ import type { RemoteFileState } from './sync';
 
 export interface FullSyncSeed {
 	driveId?: string;
-	localFile?: TFile;
+	localFile?: LocalFileState;
 	pathHint: string;
 	remoteState: RemoteFileState;
 }
@@ -27,11 +29,23 @@ export async function buildFullSyncSeeds(
 	accessToken: string,
 ): Promise<FullSyncSeed[]> {
 	const state = plugin.syncState!;
+	const configDir = plugin.app.vault.configDir;
+	let ignoredTechnicalPaths = 0;
 	const remoteFiles = await listAllFilesRecursive(
 		accessToken,
 		state.rootFolderId,
+		(path) => {
+			const included = !isExcludedPath(path, configDir);
+			if (!included) ignoredTechnicalPaths++;
+			return included;
+		},
 	);
 	log(`DriveSync: listed ${remoteFiles.length} remote entries`);
+	if (ignoredTechnicalPaths > 0) {
+		log(
+			`DriveSync: ignored ${ignoredTechnicalPaths} technical remote path${ignoredTechnicalPaths === 1 ? '' : 's'}`,
+		);
+	}
 	const folders = remoteFiles.filter(
 		(file) =>
 			file.mimeType === 'application/vnd.google-apps.folder',
@@ -67,19 +81,25 @@ export async function buildFullSyncSeeds(
 		);
 	}
 
-	const configDir = plugin.app.vault.configDir + '/';
-	const localByPath = new Map<string, TFile>();
-	for (const localFile of plugin.app.vault.getFiles()) {
-		if (!localFile.path.startsWith(configDir)) {
-			localByPath.set(localFile.path, localFile);
-		}
-	}
+	const localFiles = await listLocalFiles(
+		plugin.app.vault.adapter,
+		configDir,
+	);
+	const localByPath = new Map(
+		localFiles.map((file) => [file.path, file]),
+	);
 
 	const seeds: FullSyncSeed[] = [];
 	const handledRemote = new Set<string>();
 	const handledLocal = new Set<string>();
+	let stateChanged = false;
 
 	for (const tracked of Object.values(state.files)) {
+		if (isExcludedPath(tracked.path, configDir)) {
+			delete state.files[tracked.path];
+			stateChanged = true;
+			continue;
+		}
 		if (ignoredRemoteIds.has(tracked.driveId)) {
 			const localFile = localByPath.get(tracked.path);
 			if (localFile) handledLocal.add(localFile.path);
@@ -132,5 +152,6 @@ export async function buildFullSyncSeeds(
 			},
 		});
 	}
+	if (stateChanged) await plugin.saveAllData();
 	return seeds;
 }

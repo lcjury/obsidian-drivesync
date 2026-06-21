@@ -8,6 +8,7 @@ import type { TokenData, SyncState } from './types';
 import { startAuthFlow } from './auth/oauth';
 import { findOrCreateFolder } from './drive/client';
 import { SyncCoordinator } from './drive/coordinator';
+import { startConfigWatcher } from './config-watcher';
 import { startWatcher } from './watcher';
 import { DrivesyncStatusView, STATUS_VIEW_TYPE } from './ui/status-view';
 import { initLogger, flushAndClose, log } from './utils/logger';
@@ -93,6 +94,7 @@ export default class ObsidianDriveSync extends Plugin {
 	private watcherCleanup: (() => void) | null = null;
 	private statusBarItem: HTMLElement | null = null;
 	private autoSyncStartTimer: number | null = null;
+	private configWatchIgnoreUntil = 0;
 	private saveVersion = 0;
 	private savedVersion = 0;
 	private saveRunning = false;
@@ -157,14 +159,16 @@ export default class ObsidianDriveSync extends Plugin {
 				);
 			}
 
-			if (!this.settings.autoSync || !this.tokenData || !this.syncState) {
+			if (!this.tokenData || !this.syncState) {
 				return;
 			}
 			if (!this.isDriveFolderSelectionCurrent()) return;
 
 			this.autoSyncStartTimer = window.setTimeout(() => {
 				this.autoSyncStartTimer = null;
-				this.startAutoSync();
+				void this.runFullSync().finally(() => {
+					this.startAutoSync();
+				});
 			}, STARTUP_WATCHER_QUIET_MS);
 		});
 	}
@@ -266,6 +270,17 @@ export default class ObsidianDriveSync extends Plugin {
 		} else {
 			this.statusBarItem.setText('Drivesync: Not connected');
 		}
+	}
+
+	suppressConfigWatch(durationMs = 5000): void {
+		this.configWatchIgnoreUntil = Math.max(
+			this.configWatchIgnoreUntil,
+			Date.now() + durationMs,
+		);
+	}
+
+	isConfigWatchSuppressed(): boolean {
+		return Date.now() < this.configWatchIgnoreUntil;
 	}
 
 	isDriveFolderSelectionCurrent(): boolean {
@@ -392,7 +407,12 @@ export default class ObsidianDriveSync extends Plugin {
 		if (!this.tokenData) return;
 		if (!this.isDriveFolderSelectionCurrent()) return;
 		this.stopAutoSync();
-		this.watcherCleanup = startWatcher(this, { quietMs });
+		const fileWatcherCleanup = startWatcher(this, { quietMs });
+		const configWatcherCleanup = startConfigWatcher(this, quietMs);
+		this.watcherCleanup = () => {
+			fileWatcherCleanup();
+			configWatcherCleanup();
+		};
 	}
 
 	stopAutoSync(): void {

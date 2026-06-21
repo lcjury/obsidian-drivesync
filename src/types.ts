@@ -7,6 +7,12 @@ export interface TrackedFile {
 	localMtime: number;
 }
 
+export interface LocalFileState {
+	path: string;
+	mtime: number;
+	size: number;
+}
+
 export interface SyncState {
 	files: Record<string, TrackedFile>;
 	rootFolderId: string;

@@ -123,15 +123,15 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 			.addToggle((toggle) =>
 				toggle
 					.setValue(this.plugin.settings.autoSync)
-					.onChange(async (value) => {
-						this.plugin.settings.autoSync = value;
-						await this.plugin.saveAllData();
-						if (value) {
-							this.plugin.startAutoSync();
-						} else {
-							this.plugin.stopAutoSync();
-						}
-					}),
+						.onChange(async (value) => {
+							this.plugin.settings.autoSync = value;
+							await this.plugin.saveAllData();
+							if (value) {
+								this.plugin.startAutoSync();
+							} else {
+								this.plugin.stopAutoSync();
+							}
+						}),
 			);
 
 		new Setting(containerEl)
@@ -204,7 +204,7 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 						.onClick(async () => {
 							await this.plugin.disconnectDrive();
 							// eslint-disable-next-line @typescript-eslint/no-deprecated
-						this.display();
+							this.display();
 						}),
 				);
 		} else {
@@ -220,7 +220,7 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 						.onClick(async () => {
 							await this.plugin.connectDrive();
 							// eslint-disable-next-line @typescript-eslint/no-deprecated
-						this.display();
+							this.display();
 						}),
 				);
 		}

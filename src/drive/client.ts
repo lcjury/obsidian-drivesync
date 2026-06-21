@@ -211,21 +211,31 @@ export async function listFilesInFolder(
 export async function listAllFilesRecursive(
 	accessToken: string,
 	rootFolderId: string,
+	includePath: (path: string) => boolean = () => true,
 ): Promise<DriveFile[]> {
 	const allFiles: DriveFile[] = [];
-	const folderQueue: string[] = [rootFolderId];
+	const folderQueue: Array<{ id: string; path: string }> = [
+		{ id: rootFolderId, path: '' },
+	];
 
 	while (folderQueue.length > 0) {
 		const batch = folderQueue.splice(0, Math.min(folderQueue.length, 10));
 		const results = await Promise.all(
-			batch.map((fid) => listFilesInFolder(accessToken, fid)),
+			batch.map(({ id }) => listFilesInFolder(accessToken, id)),
 		);
 
-		for (const files of results) {
+		for (let index = 0; index < results.length; index++) {
+			const files = results[index]!;
+			const parentPath = batch[index]!.path;
 			for (const file of files) {
+				const path = parentPath
+					? `${parentPath}/${file.name}`
+					: file.name;
+				if (!includePath(path)) continue;
+
 				if (file.mimeType === 'application/vnd.google-apps.folder') {
 					allFiles.push(file);
-					folderQueue.push(file.id);
+					folderQueue.push({ id: file.id, path });
 				} else {
 					allFiles.push(file);
 				}
