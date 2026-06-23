@@ -8,6 +8,7 @@ import type { TokenData, SyncState } from './types';
 import { startAuthFlow } from './auth/oauth';
 import { findOrCreateFolder } from './drive/client';
 import { SyncCoordinator } from './drive/coordinator';
+import { startRemoteChangePoller } from './drive/change-poller';
 import { startConfigWatcher } from './config-watcher';
 import { startWatcher } from './watcher';
 import { DrivesyncStatusView, STATUS_VIEW_TYPE } from './ui/status-view';
@@ -92,6 +93,7 @@ export default class ObsidianDriveSync extends Plugin {
 	syncCoordinator!: SyncCoordinator;
 
 	private watcherCleanup: (() => void) | null = null;
+	private remotePollerCleanup: (() => void) | null = null;
 	private statusBarItem: HTMLElement | null = null;
 	private autoSyncStartTimer: number | null = null;
 	private configWatchIgnoreUntil = 0;
@@ -409,16 +411,22 @@ export default class ObsidianDriveSync extends Plugin {
 		this.stopAutoSync();
 		const fileWatcherCleanup = startWatcher(this, { quietMs });
 		const configWatcherCleanup = startConfigWatcher(this, quietMs);
+		const remotePollerCleanup = startRemoteChangePoller(this);
 		this.watcherCleanup = () => {
 			fileWatcherCleanup();
 			configWatcherCleanup();
 		};
+		this.remotePollerCleanup = remotePollerCleanup;
 	}
 
 	stopAutoSync(): void {
 		if (this.watcherCleanup) {
 			this.watcherCleanup();
 			this.watcherCleanup = null;
+		}
+		if (this.remotePollerCleanup) {
+			this.remotePollerCleanup();
+			this.remotePollerCleanup = null;
 		}
 	}
 

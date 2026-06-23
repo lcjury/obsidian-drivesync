@@ -2,10 +2,15 @@
 
 Two-way sync your Obsidian vault with Google Drive.
 
-**This is not real-time sync.** Sync happens in three scenarios:
+DriveSync ignores a small set of vault-technical files, including
+`.obsidian/workspace.json`, `.obsidian/workspace-mobile.json`, and
+`.obsidian/graph.json`.
+
+**This is not real-time sync.** Sync happens in four scenarios:
 
 - **On startup**: when you open Obsidian, the plugin compares local and remote files and reconciles changes.
 - **On file change**: when you edit a note, changes are uploaded to Drive after a debounce period (2s by default).
+- **On remote polling**: while auto-sync is enabled, the plugin periodically checks Google Drive for incremental changes and downloads remote updates.
 - **Manual**: run "Sync now" from the command palette, ribbon icon, or status view at any time.
 
 Conflicts are resolved automatically: the newest version wins, and the older version is saved as `(conflicted).md`.

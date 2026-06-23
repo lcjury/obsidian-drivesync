@@ -18,6 +18,7 @@ export interface SyncState {
 	rootFolderId: string;
 	rootFolderName: string;
 	lastSyncTime: number;
+	remoteChangeToken?: string | null;
 }
 
 export interface TokenData {

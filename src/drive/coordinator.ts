@@ -8,6 +8,13 @@ import type {
 import { getValidAccessToken } from '../auth/oauth';
 import { SYNC_CONCURRENCY } from '../constants';
 import {
+	getStartPageToken,
+	listChanges,
+	resolveDriveFilePath,
+	type DriveChange,
+	type DriveFile,
+} from './client';
+import {
 	reconcileFile,
 	type ReconcileInput,
 	type RemoteFileState,
@@ -22,6 +29,12 @@ interface IdentityRecord {
 	localFile?: LocalFileState;
 	pathHint?: string;
 	remoteState?: RemoteFileState;
+}
+
+interface RemoteChangeBatch {
+	seeds: FullSyncSeed[];
+	newStartPageToken: string | null;
+	needsFullSync: boolean;
 }
 
 function emptyResult(): SyncResult {
@@ -47,6 +60,15 @@ function findTrackedByPath(
 	path: string,
 ): TrackedFile | undefined {
 	return plugin.syncState?.files[path];
+}
+
+function findTrackedByDriveId(
+	plugin: ObsidianDriveSync,
+	driveId: string,
+): TrackedFile | undefined {
+	const files = plugin.syncState?.files;
+	if (!files) return undefined;
+	return Object.values(files).find((tracked) => tracked.driveId === driveId);
 }
 
 function showSummary(result: SyncResult): void {
@@ -80,6 +102,7 @@ export class SyncCoordinator {
 	private refreshRequested = false;
 	private tokenPromise: Promise<string | null> | null = null;
 	private fullSyncPromise: Promise<SyncResult> | null = null;
+	private remoteSyncPromise: Promise<SyncResult> | null = null;
 	private fullSyncResult: SyncResult | null = null;
 	private readonly services = new SyncServiceManager(this.plugin);
 
@@ -140,6 +163,16 @@ export class SyncCoordinator {
 			this.maybeScheduleRefresh();
 		});
 		return this.fullSyncPromise;
+	}
+
+	runRemoteChangeSync(): Promise<SyncResult> {
+		if (this.remoteSyncPromise) return this.remoteSyncPromise;
+
+		this.remoteSyncPromise = this.executeRemoteChangeSync().finally(() => {
+			this.remoteSyncPromise = null;
+			this.maybeScheduleRefresh();
+		});
+		return this.remoteSyncPromise;
 	}
 
 	private getIdentity(
@@ -296,49 +329,66 @@ export class SyncCoordinator {
 		const result = emptyResult();
 		this.fullSyncResult = result;
 		log('── Sync started ──');
+		let accessToken: string | null = null;
+		let aborted = false;
 
 		await this.waitForIdle();
 		if (this.stopped) return result;
 		this.paused = true;
 
 		try {
-			const accessToken = await this.getAccessToken();
+			accessToken = await this.getAccessToken();
 			if (!accessToken) {
 				result.errors.push(
 					'Not authenticated. Run "Connect Google Drive" first.',
 				);
-				return result;
-			}
-			if (!this.plugin.syncState) {
+				aborted = true;
+			} else if (!this.plugin.syncState) {
 				result.errors.push(
 					'No sync state. Run "Connect Google Drive" first.',
 				);
-				return result;
-			}
-			if (!this.plugin.isDriveFolderSelectionCurrent()) {
+				aborted = true;
+			} else if (!this.plugin.isDriveFolderSelectionCurrent()) {
 				result.errors.push(
 					'Drive folder selection changed. Reconnect Google Drive first.',
 				);
-				return result;
+				aborted = true;
+			} else {
+				this.services.clearRemoteCache();
+				const seeds = await buildFullSyncSeeds(
+					this.plugin,
+					accessToken,
+				);
+				for (const seed of seeds) this.seed(seed);
 			}
-
-			this.services.clearRemoteCache();
-			const seeds = await buildFullSyncSeeds(
-				this.plugin,
-				accessToken,
-			);
-			for (const seed of seeds) this.seed(seed);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			result.errors.push(`Sync failed: ${message}`);
 			new Notice(`Drivesync: Sync failed — ${message}`);
+			aborted = true;
 		} finally {
 			this.paused = false;
 			this.pump();
 		}
 
+		if (aborted) {
+			showSummary(result);
+			return result;
+		}
+
 		await this.waitForIdle();
 		if (this.plugin.syncState) {
+			try {
+				if (accessToken) {
+					this.plugin.syncState.remoteChangeToken =
+						await getStartPageToken(accessToken);
+				}
+			} catch (err) {
+				const message = err instanceof Error ? err.message : String(err);
+				result.errors.push(
+					`Drive change token refresh failed: ${message}`,
+				);
+			}
 			this.plugin.syncState.lastSyncTime = Date.now();
 			await this.plugin.saveAllData();
 		}
@@ -354,6 +404,192 @@ export class SyncCoordinator {
 			.join(', ');
 		log(`── Sync done${sum ? `: ${sum}` : ', up to date'} ──`);
 		return result;
+	}
+
+	private async executeRemoteChangeSync(): Promise<SyncResult> {
+		const result = emptyResult();
+		log('── Remote change sync started ──');
+
+		await this.waitForIdle();
+		if (this.stopped) return result;
+		this.paused = true;
+
+		let aborted = false;
+		let fallbackToFullSync = false;
+		let changeBatch: RemoteChangeBatch | null = null;
+
+		try {
+			const accessToken = await this.getAccessToken();
+			if (!accessToken) {
+				result.errors.push(
+					'Not authenticated. Run "Connect Google Drive" first.',
+				);
+				aborted = true;
+			} else if (!this.plugin.syncState) {
+				result.errors.push(
+					'No sync state. Run "Connect Google Drive" first.',
+				);
+				aborted = true;
+			} else if (!this.plugin.isDriveFolderSelectionCurrent()) {
+				result.errors.push(
+					'Drive folder selection changed. Reconnect Google Drive first.',
+				);
+				aborted = true;
+			} else if (!this.plugin.syncState.remoteChangeToken) {
+				fallbackToFullSync = true;
+			} else {
+				changeBatch = await this.collectRemoteChangeSeeds(accessToken);
+				if (changeBatch.needsFullSync) {
+					fallbackToFullSync = true;
+				} else {
+					this.services.clearRemoteCache();
+					for (const seed of changeBatch.seeds) this.seed(seed);
+				}
+			}
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			result.errors.push(`Remote polling failed: ${message}`);
+			fallbackToFullSync = true;
+		} finally {
+			this.paused = false;
+			this.pump();
+		}
+
+		if (aborted) {
+			showSummary(result);
+			return result;
+		}
+
+		if (fallbackToFullSync) {
+			return await this.runFullSync();
+		}
+
+		await this.waitForIdle();
+		if (this.plugin.syncState && changeBatch) {
+			if (changeBatch.newStartPageToken) {
+				this.plugin.syncState.remoteChangeToken =
+					changeBatch.newStartPageToken;
+			}
+			this.plugin.syncState.lastSyncTime = Date.now();
+			await this.plugin.saveAllData();
+		}
+		showSummary(result);
+		log('── Remote change sync done ──');
+		return result;
+	}
+
+	private async collectRemoteChangeSeeds(
+		accessToken: string,
+	): Promise<RemoteChangeBatch> {
+		const state = this.plugin.syncState;
+		if (!state) {
+			return {
+				seeds: [],
+				newStartPageToken: null,
+				needsFullSync: false,
+			};
+		}
+
+		const folderCache = new Map<string, DriveFile>();
+		const seeds: FullSyncSeed[] = [];
+		let pageToken = state.remoteChangeToken ?? '';
+		let newStartPageToken: string | null = null;
+
+		while (pageToken) {
+			const response = await listChanges(accessToken, pageToken);
+			for (const change of response.changes ?? []) {
+				const seed = await this.changeToSeed(
+					accessToken,
+					change,
+					folderCache,
+				);
+				if (seed === null) continue;
+				if (seed === 'full-sync') {
+					return {
+						seeds: [],
+						newStartPageToken: null,
+						needsFullSync: true,
+					};
+				}
+				seeds.push(seed);
+			}
+			if (response.newStartPageToken) {
+				newStartPageToken = response.newStartPageToken;
+			}
+			pageToken = response.nextPageToken ?? '';
+		}
+
+		return {
+			seeds,
+			newStartPageToken,
+			needsFullSync: false,
+		};
+	}
+
+	private async changeToSeed(
+		accessToken: string,
+		change: DriveChange,
+		folderCache: Map<string, DriveFile>,
+	): Promise<FullSyncSeed | 'full-sync' | null> {
+		const state = this.plugin.syncState;
+		if (!state) return null;
+
+		const tracked =
+			findTrackedByDriveId(this.plugin, change.fileId) ??
+			(change.file?.id ? findTrackedByDriveId(this.plugin, change.file.id) : undefined);
+
+		if (change.removed) {
+			if (!tracked) return null;
+			return {
+				driveId: tracked.driveId,
+				pathHint: tracked.path,
+				remoteState: {
+					file: null,
+					path: tracked.path,
+				},
+			};
+		}
+
+		if (change.file) {
+			const path = await resolveDriveFilePath(
+				accessToken,
+				change.file,
+				state.rootFolderId,
+				folderCache,
+			);
+			if (!path) {
+				if (!tracked) return null;
+				return {
+					driveId: change.file.id,
+					pathHint: tracked.path,
+					remoteState: {
+						file: null,
+						path: tracked.path,
+					},
+				};
+			}
+
+			if (change.file.mimeType === 'application/vnd.google-apps.folder') {
+				return 'full-sync';
+			}
+			if (
+				change.file.mimeType.startsWith('application/vnd.google-apps.') &&
+				change.file.mimeType !== 'application/vnd.google-apps.folder'
+			) {
+				return tracked ? 'full-sync' : null;
+			}
+
+			return {
+				driveId: change.file.id,
+				pathHint: path,
+				remoteState: {
+					file: change.file,
+					path,
+				},
+			};
+		}
+
+		return null;
 	}
 
 	private seed(seed: FullSyncSeed): void {

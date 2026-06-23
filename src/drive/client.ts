@@ -1,5 +1,6 @@
 import { requestUrl } from 'obsidian';
 import {
+	DRIVE_API_BASE,
 	DRIVE_FILES_URL,
 	DRIVE_UPLOAD_BASE,
 } from '../constants';
@@ -9,6 +10,9 @@ type RequestUrlResponse = Awaited<ReturnType<typeof requestUrl>>;
 
 const DRIVE_FILE_FIELDS =
 	'id,name,md5Checksum,modifiedTime,mimeType,size,trashed,parents,appProperties';
+const DRIVE_CHANGE_FILE_FIELDS =
+	'id,name,md5Checksum,modifiedTime,mimeType,size,trashed,parents,appProperties';
+const DRIVE_CHANGE_FIELDS = `fileId,removed,time,file(${DRIVE_CHANGE_FILE_FIELDS})`;
 
 export interface DriveFile {
 	id: string;
@@ -25,6 +29,19 @@ export interface DriveFile {
 export interface DriveFileListResponse {
 	files: DriveFile[];
 	nextPageToken?: string;
+}
+
+export interface DriveChange {
+	fileId: string;
+	removed?: boolean;
+	time?: string;
+	file?: DriveFile | null;
+}
+
+export interface DriveChangeListResponse {
+	changes?: DriveChange[];
+	nextPageToken?: string;
+	newStartPageToken?: string;
 }
 
 function authHeaders(accessToken: string): Record<string, string> {
@@ -246,6 +263,62 @@ export async function listAllFilesRecursive(
 	return allFiles;
 }
 
+async function getCachedFileMetadata(
+	accessToken: string,
+	fileId: string,
+	cache: Map<string, DriveFile>,
+): Promise<DriveFile> {
+	const cached = cache.get(fileId);
+	if (cached) return cached;
+	const file = await getFileMetadata(accessToken, fileId);
+	cache.set(fileId, file);
+	return file;
+}
+
+async function resolveFolderPath(
+	accessToken: string,
+	folderId: string,
+	rootFolderId: string,
+	cache: Map<string, DriveFile>,
+): Promise<string | null> {
+	if (folderId === rootFolderId) return '';
+	if (folderId === 'root') return null;
+
+	const folder = await getCachedFileMetadata(accessToken, folderId, cache);
+	const parentId = folder.parents?.[0];
+	if (!parentId) return null;
+
+	const parentPath = await resolveFolderPath(
+		accessToken,
+		parentId,
+		rootFolderId,
+		cache,
+	);
+	if (parentPath === null) return null;
+
+	return parentPath ? `${parentPath}/${folder.name}` : folder.name;
+}
+
+export async function resolveDriveFilePath(
+	accessToken: string,
+	file: DriveFile,
+	rootFolderId: string,
+	cache: Map<string, DriveFile> = new Map(),
+): Promise<string | null> {
+	const parentId = file.parents?.[0];
+	if (!parentId) return file.name;
+
+	const parentPath = await resolveFolderPath(
+		accessToken,
+		parentId,
+		rootFolderId,
+		cache,
+	);
+	if (parentPath === null) return null;
+
+	return parentPath ? `${parentPath}/${file.name}` : file.name;
+}
+
 function resolveFilePath(
 	file: DriveFile,
 	allFiles: DriveFile[],
@@ -436,4 +509,40 @@ export async function getFileMetadata(
 		headers: authHeaders(accessToken),
 	});
 	return response.json as DriveFile;
+}
+
+export async function getStartPageToken(
+	accessToken: string,
+): Promise<string> {
+	const response = await requestDriveUrl({
+		url: `${DRIVE_API_BASE}/changes/startPageToken?supportsAllDrives=true`,
+		headers: authHeaders(accessToken),
+	});
+	const data = response.json as { startPageToken?: string };
+	if (!data.startPageToken) {
+		throw new Error('Google Drive did not return a start page token');
+	}
+	return data.startPageToken;
+}
+
+export async function listChanges(
+	accessToken: string,
+	pageToken: string,
+): Promise<DriveChangeListResponse> {
+	const query = new URLSearchParams({
+		pageToken,
+		pageSize: '1000',
+		supportsAllDrives: 'true',
+		includeItemsFromAllDrives: 'true',
+		includeRemoved: 'true',
+		restrictToMyDrive: 'false',
+		spaces: 'drive',
+		fields: `nextPageToken,newStartPageToken,changes(${DRIVE_CHANGE_FIELDS})`,
+	});
+
+	const response = await requestDriveUrl({
+		url: `${DRIVE_API_BASE}/changes?${query.toString()}`,
+		headers: authHeaders(accessToken),
+	});
+	return response.json as DriveChangeListResponse;
 }

@@ -2,6 +2,12 @@ function pathIsInside(path: string, parent: string): boolean {
 	return path === parent || path.startsWith(`${parent}/`);
 }
 
+const excludedConfigFiles = new Set([
+	'workspace.json',
+	'workspace-mobile.json',
+	'graph.json',
+]);
+
 export function isConfigPath(path: string, configDir: string): boolean {
 	return pathIsInside(path, configDir);
 }
@@ -32,6 +38,7 @@ export function isExcludedPath(path: string, configDir: string): boolean {
 	const name = parts[parts.length - 1] ?? '';
 	const lowerName = name.toLowerCase();
 	return (
+		excludedConfigFiles.has(name) ||
 		lowerName === '.ds_store' ||
 		lowerName === 'thumbs.db' ||
 		lowerName === 'desktop.ini' ||
