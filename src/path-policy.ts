@@ -19,7 +19,7 @@ export function isExcludedPath(path: string, configDir: string): boolean {
 		path === configDir ? '' : path.substring(configDir.length + 1);
 	if (!relativePath) return false;
 
-	const ownPluginPath = 'plugins/obsidian-drivesync';
+	const ownPluginPath = 'plugins/drivesync';
 	if (pathIsInside(relativePath, ownPluginPath)) return true;
 
 	const parts = relativePath.split('/');

@@ -8,7 +8,7 @@ let flushTimer: number | null = null;
 
 export function initLogger(v: Vault, configDir: string) {
 	vault = v;
-	logPath = `${configDir}/plugins/obsidian-drivesync/drivesync.log`;
+	logPath = `${configDir}/plugins/drivesync/drivesync.log`;
 }
 
 export function log(message: string) {
