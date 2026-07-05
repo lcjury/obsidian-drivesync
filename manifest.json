@@ -1,7 +1,7 @@
 {
-	"id": "obsidian-drivesync",
+	"id": "drivesync",
 	"name": "DriveSync",
-	"version": "0.1.3",
+	"version": "0.1.4",
 	"minAppVersion": "1.7.2",
 	"description": "Two-way sync your vault with Google Drive.",
 	"author": "lcjury",

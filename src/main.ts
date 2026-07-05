@@ -373,7 +373,6 @@ export default class ObsidianDriveSync extends Plugin {
 	async disconnectDrive(): Promise<void> {
 		this.syncCoordinator.clear();
 		this.tokenData = null;
-		this.syncState = null;
 		this.authorizationUpgradeRequired = false;
 		this.stopAutoSync();
 		await this.saveAllData();
