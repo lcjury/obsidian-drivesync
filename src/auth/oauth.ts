@@ -53,15 +53,18 @@ function buildAuthUrl(
  * On Mobile we can't create an http server, but we keep this in order to have a simple flow for desktop users.
  */
 function waitForAuthCodeDesktop(port: number, authUrl: string): Promise<string> {
-	/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-require-imports, import/no-nodejs-modules, no-undef */
-	const http = require('http');
-	return new Promise<string>((resolve, reject) => {
-		let settled = false;
-		let serverListening = false;
-		let timeoutId: number | null = null;
+	const desktopRequire = (
+		window as Window & {
+			require?: (moduleName: string) => unknown;
+		}
+	).require;
+	if (!desktopRequire) {
+		throw new Error('Desktop OAuth callback server is unavailable');
+	}
 
-		const server = http.createServer(
-			(
+	const http = desktopRequire('http') as {
+		createServer: (
+			handler: (
 				req: { url?: string },
 				res: {
 					writeHead: (
@@ -70,7 +73,26 @@ function waitForAuthCodeDesktop(port: number, authUrl: string): Promise<string> 
 					) => void;
 					end: (b: string) => void;
 				},
-			) => {
+			) => void,
+		) => {
+			close: () => void;
+			listen: (
+				port: number,
+				host: string,
+				callback: () => void,
+			) => void;
+			on: (
+				event: 'error',
+				callback: (err: { message: string }) => void,
+			) => void;
+		};
+	};
+	return new Promise<string>((resolve, reject) => {
+		let settled = false;
+		let serverListening = false;
+		let timeoutId: number | null = null;
+
+		const server = http.createServer((req, res) => {
 				const reqUrl = new URL(
 					req.url ?? '/',
 					`http://127.0.0.1:${port}`,
@@ -154,7 +176,6 @@ function waitForAuthCodeDesktop(port: number, authUrl: string): Promise<string> 
 			fail(new Error('Authentication timed out (5 minutes)'));
 		}, 5 * 60 * 1000);
 	});
-	/* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
 }
 
 export type CodeProvider = () => Promise<string>;

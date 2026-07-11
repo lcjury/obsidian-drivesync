@@ -1,4 +1,3 @@
-/* eslint-disable obsidianmd/rule-custom-message */
 import type { Vault } from 'obsidian';
 
 let vault: Vault | null = null;
@@ -12,7 +11,6 @@ export function initLogger(v: Vault, configDir: string) {
 }
 
 export function log(message: string) {
-	console.log(message);
 	const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
 	buffer.push(`[${ts}] ${message}`);
 	scheduleFlush();

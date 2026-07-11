@@ -33,6 +33,10 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 	}
 
 	display(): void {
+		this.render();
+	}
+
+	private render(): void {
 		const { containerEl } = this;
 		containerEl.empty();
 
@@ -105,13 +109,10 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 			);
 		if (this.plugin.tokenData) {
 			driveFolderSetting.addButton((btn) =>
-				btn
-					.setButtonText('Apply')
-					.onClick(async () => {
-						await this.plugin.connectDrive();
-						// eslint-disable-next-line @typescript-eslint/no-deprecated
-						this.display();
-					}),
+				btn.setButtonText('Apply').onClick(async () => {
+					await this.plugin.connectDrive();
+					this.render();
+				}),
 			);
 		}
 
@@ -193,18 +194,16 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 		if (connected) {
 			new Setting(containerEl)
 				.setName('Disconnect')
-				.setDesc(
-					'Remove Google Drive connection from this device.',
-				)
+				.setDesc('Remove Google Drive connection from this device.')
 				.addButton((btn) =>
 					btn
 						.setButtonText('Disconnect')
-					// eslint-disable-next-line @typescript-eslint/no-deprecated
-						.setWarning()
+						.then((button) => {
+							button.buttonEl.addClass('mod-warning');
+						})
 						.onClick(async () => {
 							await this.plugin.disconnectDrive();
-							// eslint-disable-next-line @typescript-eslint/no-deprecated
-							this.display();
+							this.render();
 						}),
 				);
 		} else {
@@ -219,8 +218,7 @@ export class DrivesyncSettingTab extends PluginSettingTab {
 						.setCta()
 						.onClick(async () => {
 							await this.plugin.connectDrive();
-							// eslint-disable-next-line @typescript-eslint/no-deprecated
-							this.display();
+							this.render();
 						}),
 				);
 		}
