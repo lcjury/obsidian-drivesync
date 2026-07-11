@@ -9,6 +9,7 @@ if you want to view the source, please visit the github repository of this plugi
 `;
 
 const prod = process.argv[2] === 'production';
+const buildOnly = process.argv[2] === 'development';
 
 const context = await esbuild.context({
 	banner: {
@@ -34,6 +35,9 @@ const context = await esbuild.context({
 	],
 	format: 'cjs',
 	target: 'es2021',
+	define: {
+		__DEV__: JSON.stringify(!prod),
+	},
 	logLevel: 'info',
 	sourcemap: prod ? false : 'inline',
 	treeShaking: true,
@@ -41,7 +45,7 @@ const context = await esbuild.context({
 	minify: prod,
 });
 
-if (prod) {
+if (prod || buildOnly) {
 	await context.rebuild();
 	process.exit(0);
 } else {

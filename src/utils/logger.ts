@@ -1,17 +1,22 @@
 import type { Vault } from 'obsidian';
 
+declare const __DEV__: boolean;
+
 let vault: Vault | null = null;
 let logPath: string | null = null;
 const buffer: string[] = [];
 let flushTimer: number | null = null;
 
-export function initLogger(v: Vault, configDir: string) {
+export function initLogger(v: Vault, pluginDir: string) {
 	vault = v;
-	logPath = `${configDir}/plugins/drivesync/drivesync.log`;
+	logPath = `${pluginDir}/drivesync.log`;
 }
 
 export function log(message: string) {
 	const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+	if (__DEV__) {
+		console.debug(`[${ts}] ${message}`);
+	}
 	buffer.push(`[${ts}] ${message}`);
 	scheduleFlush();
 }

@@ -30,12 +30,13 @@ export async function buildFullSyncSeeds(
 ): Promise<FullSyncSeed[]> {
 	const state = plugin.syncState!;
 	const configDir = plugin.app.vault.configDir;
+	const pluginDir = plugin.getPluginDir();
 	let ignoredTechnicalPaths = 0;
 	const remoteFiles = await listAllFilesRecursive(
 		accessToken,
 		state.rootFolderId,
 		(path) => {
-			const included = !isExcludedPath(path, configDir);
+			const included = !isExcludedPath(path, configDir, pluginDir);
 			if (!included) ignoredTechnicalPaths++;
 			return included;
 		},
@@ -84,6 +85,7 @@ export async function buildFullSyncSeeds(
 	const localFiles = await listLocalFiles(
 		plugin.app.vault.adapter,
 		configDir,
+		pluginDir,
 	);
 	const localByPath = new Map(
 		localFiles.map((file) => [file.path, file]),
@@ -95,7 +97,7 @@ export async function buildFullSyncSeeds(
 	let stateChanged = false;
 
 	for (const tracked of Object.values(state.files)) {
-		if (isExcludedPath(tracked.path, configDir)) {
+		if (isExcludedPath(tracked.path, configDir, pluginDir)) {
 			delete state.files[tracked.path];
 			stateChanged = true;
 			continue;

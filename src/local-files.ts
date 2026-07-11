@@ -6,9 +6,10 @@ export async function getLocalFile(
 	adapter: DataAdapter,
 	path: string,
 	configDir: string,
+	pluginDir: string,
 ): Promise<LocalFileState | null> {
 	const normalizedPath = normalizePath(path);
-	if (isExcludedPath(normalizedPath, configDir)) return null;
+	if (isExcludedPath(normalizedPath, configDir, pluginDir)) return null;
 
 	const stat = await adapter.stat(normalizedPath);
 	if (!stat || stat.type !== 'file') return null;
@@ -22,6 +23,7 @@ export async function getLocalFile(
 export async function listLocalFiles(
 	adapter: DataAdapter,
 	configDir: string,
+	pluginDir: string,
 ): Promise<LocalFileState[]> {
 	const files: LocalFileState[] = [];
 	const folderQueue = [''];
@@ -32,7 +34,7 @@ export async function listLocalFiles(
 
 		for (const childFolder of listed.folders) {
 			const normalized = normalizePath(childFolder);
-			if (!isExcludedPath(normalized, configDir)) {
+			if (!isExcludedPath(normalized, configDir, pluginDir)) {
 				folderQueue.push(normalized);
 			}
 		}
@@ -42,6 +44,7 @@ export async function listLocalFiles(
 				adapter,
 				childFile,
 				configDir,
+				pluginDir,
 			);
 			if (localFile) files.push(localFile);
 		}

@@ -16,6 +16,8 @@ export function startWatcher(
 	const pendingPaths = new Set<string>();
 	let isSyncing = false;
 	const ignoreUntil = Date.now() + (options.quietMs ?? 0);
+	const configDir = plugin.app.vault.configDir;
+	const pluginDir = plugin.getPluginDir();
 
 	function activeFileDebounceMs(): number {
 		return Math.max(plugin.settings.debounceMs, ACTIVE_FILE_DEBOUNCE_MS);
@@ -41,7 +43,7 @@ export function startWatcher(
 	function getSyncableFile(file: TAbstractFile): TFile | null {
 		if (Date.now() < ignoreUntil) return null;
 		if (!(file instanceof TFile)) return null;
-		if (isExcludedPath(file.path, plugin.app.vault.configDir)) return null;
+		if (isExcludedPath(file.path, configDir, pluginDir)) return null;
 
 		const tracked = plugin.syncState?.files[file.path];
 		if (tracked && file.stat.mtime === tracked.localMtime) return null;
@@ -109,14 +111,14 @@ export function startWatcher(
 	const deleteRef = plugin.app.vault.on('delete', (file) => {
 		if (Date.now() < ignoreUntil) return;
 		if (!(file instanceof TFile)) return;
-		if (isExcludedPath(file.path, plugin.app.vault.configDir)) return;
+		if (isExcludedPath(file.path, configDir, pluginDir)) return;
 		log(`DriveSync watcher: deleted ${file.path}`);
 		plugin.syncCoordinator.markDeleted(file.path);
 	});
 	const renameRef = plugin.app.vault.on('rename', (file, oldPath) => {
 		if (Date.now() < ignoreUntil) return;
 		if (!(file instanceof TFile)) return;
-		if (isExcludedPath(file.path, plugin.app.vault.configDir)) return;
+		if (isExcludedPath(file.path, configDir, pluginDir)) return;
 		log(
 			`DriveSync watcher: renamed ${oldPath} → ${file.path}`,
 		);

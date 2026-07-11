@@ -12,15 +12,18 @@ export function isConfigPath(path: string, configDir: string): boolean {
 	return pathIsInside(path, configDir);
 }
 
-export function isExcludedPath(path: string, configDir: string): boolean {
+export function isExcludedPath(
+	path: string,
+	configDir: string,
+	pluginDir: string,
+): boolean {
 	if (!isConfigPath(path, configDir)) return false;
 
 	const relativePath =
 		path === configDir ? '' : path.substring(configDir.length + 1);
 	if (!relativePath) return false;
 
-	const ownPluginPath = 'plugins/drivesync';
-	if (pathIsInside(relativePath, ownPluginPath)) return true;
+	if (pathIsInside(path, pluginDir)) return true;
 
 	const parts = relativePath.split('/');
 	const excludedDirectories = new Set([

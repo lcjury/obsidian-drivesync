@@ -1,4 +1,12 @@
-import { App, Modal, Notice, Platform, Plugin, Setting } from 'obsidian';
+import {
+	App,
+	Modal,
+	Notice,
+	Platform,
+	Plugin,
+	Setting,
+	normalizePath,
+} from 'obsidian';
 import {
 	DEFAULT_SETTINGS,
 	DrivesyncSettings,
@@ -18,6 +26,8 @@ import {
 	OAUTH_SCOPE,
 	STARTUP_WATCHER_QUIET_MS,
 } from './constants';
+
+declare const __DEV__: boolean;
 
 function promptForAuthCode(app: App): Promise<string> {
 	return new Promise<string>((resolve, reject) => {
@@ -109,7 +119,10 @@ export default class ObsidianDriveSync extends Plugin {
 	async onload(): Promise<void> {
 		await this.loadAllData();
 		this.syncCoordinator = new SyncCoordinator(this);
-		initLogger(this.app.vault, this.app.vault.configDir);
+		initLogger(this.app.vault, this.getPluginDir());
+		if (__DEV__) {
+			console.debug('Drivesync in dev mode');
+		}
 
 		this.addRibbonIcon('refresh-cw', 'Drivesync: Sync now', () => {
 			void this.runFullSync();
@@ -283,6 +296,15 @@ export default class ObsidianDriveSync extends Plugin {
 
 	isConfigWatchSuppressed(): boolean {
 		return Date.now() < this.configWatchIgnoreUntil;
+	}
+
+	getPluginDir(): string {
+		const dir = normalizePath(
+			this.manifest.dir ?? `plugins/${this.manifest.id}`,
+		);
+		if (dir === this.app.vault.configDir) return dir;
+		if (dir.startsWith(`${this.app.vault.configDir}/`)) return dir;
+		return normalizePath(`${this.app.vault.configDir}/${dir}`);
 	}
 
 	isDriveFolderSelectionCurrent(): boolean {

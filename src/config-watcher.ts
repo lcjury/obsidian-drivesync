@@ -17,6 +17,7 @@ export function startConfigWatcher(
 	const ignoreUntil = Date.now() + quietMs;
 
 	const configDir = plugin.app.vault.configDir;
+	const pluginDir = plugin.getPluginDir();
 
 	function clearDebounce(): void {
 		if (debounceTimer) {
@@ -113,7 +114,7 @@ export function startConfigWatcher(
 
 				const relativePath = filename.toString().replaceAll('\\', '/');
 				const configPath = `${configDir}/${relativePath}`;
-				if (isExcludedPath(configPath, configDir)) return;
+				if (isExcludedPath(configPath, configDir, pluginDir)) return;
 				log(`DriveSync watcher: config ${eventType} ${configPath}`);
 				scheduleSync();
 			},

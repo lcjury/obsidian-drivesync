@@ -135,6 +135,7 @@ async function getCurrentLocalFile(
 			plugin.app.vault.adapter,
 			path,
 			plugin.app.vault.configDir,
+			plugin.getPluginDir(),
 		);
 		if (current) return current;
 	}
@@ -328,6 +329,7 @@ async function reconcileTrackedFile(
 				plugin.app.vault.adapter,
 				remotePath,
 				plugin.app.vault.configDir,
+				plugin.getPluginDir(),
 			);
 			if (!renamed) return result;
 			localFile = renamed;
@@ -380,6 +382,7 @@ async function reconcileTrackedFile(
 				plugin.app.vault.adapter,
 				conflict.winnerPath,
 				plugin.app.vault.configDir,
+				plugin.getPluginDir(),
 			);
 			if (!winner) return result;
 			remoteFile = await updateFileContent(
@@ -615,6 +618,7 @@ async function reconcileUntrackedFile(
 			plugin.app.vault.adapter,
 			conflict.winnerPath,
 			plugin.app.vault.configDir,
+			plugin.getPluginDir(),
 		);
 		if (!winner) return result;
 		const updated = await updateFileContent(
